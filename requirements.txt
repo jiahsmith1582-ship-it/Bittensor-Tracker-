@@ -1,0 +1,19 @@
+# Substrate interface for direct blockchain access (pure Python, works on Windows)
+async-substrate-interface>=1.5.14
+scalecodec>=1.2.12
+
+# Web API framework
+flask>=3.0.0
+flask-cors>=4.0.0
+
+# HTTP requests for external APIs
+requests>=2.31.0
+
+# Environment variable management
+python-dotenv>=1.0.0
+
+# Scheduling for automated background refresh
+apscheduler>=3.10.0
+
+# Production WSGI server (used by Render)
+gunicorn>=21.0.0
