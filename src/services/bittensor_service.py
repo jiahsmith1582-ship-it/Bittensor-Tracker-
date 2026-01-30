@@ -7,7 +7,6 @@ Falls back to substrate-interface if available for single-subnet queries.
 """
 
 import gc
-import json
 import logging
 import requests
 from typing import Optional
@@ -122,65 +121,19 @@ def _rpc_request(method: str, params: list, endpoint: str = None) -> Optional[di
         return None
 
 
-def _storage_key(pallet: str, storage: str) -> str:
-    """Compute the storage key prefix for a pallet+storage using xxhash128."""
-    import hashlib
-    # Substrate uses xxHash128 for storage keys
-    # We'll use the simpler approach: query via state_getKeys
-    # Actually, for state_getKeysPaged we need the prefix
-    # Let's compute it properly
-    try:
-        import xxhash
-        pallet_hash = xxhash.xxh128(pallet.encode()).hexdigest()
-        storage_hash = xxhash.xxh128(storage.encode()).hexdigest()
-        return "0x" + pallet_hash + storage_hash
-    except ImportError:
-        # Fallback: hardcoded keys for known storage functions
-        return _KNOWN_STORAGE_KEYS.get(f"{pallet}.{storage}", "")
-
-
-# Pre-computed storage key prefixes (xxHash128 of pallet + storage names)
-# These are deterministic and never change
-_KNOWN_STORAGE_KEYS = {}
-
-
-def _compute_storage_keys():
-    """Pre-compute all storage key prefixes we need using pure Python xxhash."""
-    global _KNOWN_STORAGE_KEYS
-    if _KNOWN_STORAGE_KEYS:
-        return
-
-    # xxHash128 implementation for substrate storage keys
-    # Substrate uses TwoX128(pallet_name) ++ TwoX128(storage_name)
-    try:
-        import xxhash
-        pallets_storages = [
-            ("SubtensorModule", "NetworksAdded"),
-            ("SubtensorModule", "SubnetTaoInEmission"),
-            ("SubtensorModule", "SubnetMovingPrice"),
-            ("SubtensorModule", "SubnetTAO"),
-            ("SubtensorModule", "SubnetAlphaIn"),
-            ("SubtensorModule", "Tempo"),
-            ("SubtensorModule", "SubnetworkN"),
-            ("SubtensorModule", "Burn"),
-        ]
-        for pallet, storage in pallets_storages:
-            ph = xxhash.xxh128(pallet.encode()).hexdigest()
-            sh = xxhash.xxh128(storage.encode()).hexdigest()
-            _KNOWN_STORAGE_KEYS[f"{pallet}.{storage}"] = "0x" + ph + sh
-    except ImportError:
-        logger.warning("xxhash not available, using hardcoded storage keys")
-        # Hardcoded keys (these are deterministic, computed from xxh128)
-        _KNOWN_STORAGE_KEYS = {
-            "SubtensorModule.NetworksAdded": "0x7769f2d2ca0534ecf5994b7abd13dfd237f540b7f502793c7bfe9cb3f6c0ad64",
-            "SubtensorModule.SubnetTaoInEmission": "0x7769f2d2ca0534ecf5994b7abd13dfd23e9ecb6a3dd1eea0a0af2436746847a9",
-            "SubtensorModule.SubnetMovingPrice": "0x7769f2d2ca0534ecf5994b7abd13dfd266fa46e411c323890ded4008779d3dc1",
-            "SubtensorModule.SubnetTAO": "0x7769f2d2ca0534ecf5994b7abd13dfd253fb8f1d003d137c52679d022eee60e1",
-            "SubtensorModule.SubnetAlphaIn": "0x7769f2d2ca0534ecf5994b7abd13dfd25a2d09c7483816a210dcb044050ab521",
-            "SubtensorModule.Tempo": "0x7769f2d2ca0534ecf5994b7abd13dfd23d822ed213a59180ae9441dc09b609d9",
-            "SubtensorModule.SubnetworkN": "0x7769f2d2ca0534ecf5994b7abd13dfd224371506f995c7cad55d8167796802e0",
-            "SubtensorModule.Burn": "0x7769f2d2ca0534ecf5994b7abd13dfd22bbabad73efc1395ca7f42e34095b2ea",
-        }
+# Pre-computed storage key prefixes for SubtensorModule storage functions.
+# Substrate TwoX128 = xxh64(data, seed=0) LE || xxh64(data, seed=1) LE
+# Key = TwoX128(pallet_name) ++ TwoX128(storage_name)
+_KNOWN_STORAGE_KEYS = {
+        "SubtensorModule.NetworksAdded": "0x658faa385070e074c85bf6b568cf05550e30450fc4d507a846032a7fa65d9a43",
+        "SubtensorModule.SubnetTaoInEmission": "0x658faa385070e074c85bf6b568cf0555dd62ae7237581e8f6a684f1ecae06215",
+        "SubtensorModule.SubnetMovingPrice": "0x658faa385070e074c85bf6b568cf05551abf1b0f4fd14f7b72ee50f9d91d5915",
+        "SubtensorModule.SubnetTAO": "0x658faa385070e074c85bf6b568cf05557a57dce016211512d1700561066b85a3",
+        "SubtensorModule.SubnetAlphaIn": "0x658faa385070e074c85bf6b568cf05552ce12f7007574647d692ac7edf8b7a53",
+        "SubtensorModule.Tempo": "0x658faa385070e074c85bf6b568cf05557641384bb339f3758acddfd7053d3317",
+        "SubtensorModule.SubnetworkN": "0x658faa385070e074c85bf6b568cf0555a1048e9d244171852dfe8db314dc68ca",
+        "SubtensorModule.Burn": "0x658faa385070e074c85bf6b568cf055501be1755d08418802946bca51b686325",
+    }
 
 
 def _query_map_rpc(storage_function: str, endpoint: str = None) -> dict:
@@ -189,7 +142,6 @@ def _query_map_rpc(storage_function: str, endpoint: str = None) -> dict:
     Uses state_getKeysPaged + state_queryStorageAt for minimal memory usage.
     Returns {netuid: raw_value} dict.
     """
-    _compute_storage_keys()
     prefix = _KNOWN_STORAGE_KEYS.get(f"SubtensorModule.{storage_function}", "")
     if not prefix:
         logger.warning(f"No storage key for {storage_function}")
@@ -202,10 +154,11 @@ def _query_map_rpc(storage_function: str, endpoint: str = None) -> dict:
     try:
         # Get all keys with this prefix
         all_keys = []
-        start_key = prefix
+        start_key = None
         page_size = 1000
         while True:
-            keys = _rpc_request("state_getKeysPaged", [prefix, page_size, start_key], endpoint)
+            params = [prefix, page_size] if start_key is None else [prefix, page_size, start_key]
+            keys = _rpc_request("state_getKeysPaged", params, endpoint)
             if not keys:
                 break
             all_keys.extend(keys)
@@ -458,7 +411,7 @@ class BittensorService:
         if netuid in self._cached_subnets:
             return self._cached_subnets[netuid]
         # Try from cache via full fetch
-        subnets = self.get_all_subnets()
+        self.get_all_subnets()
         return self._cached_subnets.get(netuid)
 
     def get_current_block(self) -> int:
