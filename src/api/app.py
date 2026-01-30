@@ -6,12 +6,16 @@ Creates and configures the Flask application.
 
 import logging
 import os
+import atexit
+import threading
 from flask import Flask
 from flask_cors import CORS
 
 from .routes import api
 
 logger = logging.getLogger(__name__)
+
+_scheduler_started = False
 
 
 def create_app(config: dict = None) -> Flask:
@@ -81,5 +85,66 @@ def create_app(config: dict = None) -> Flask:
         logger.error(f"Internal server error: {error}")
         return {'error': 'Internal server error'}, 500
 
+    # Start background refresh (works under both gunicorn and dev server)
+    _start_background_refresh()
+
     logger.info("Flask application created successfully")
     return app
+
+
+def _start_background_refresh():
+    """Start background scheduler for periodic data refresh."""
+    global _scheduler_started
+    if _scheduler_started:
+        return
+    _scheduler_started = True
+
+    try:
+        from apscheduler.schedulers.background import BackgroundScheduler
+        from ..config import config
+        from ..services.bittensor_service import get_bittensor_service
+        from ..services.price_service import get_price_service
+
+        scheduler = BackgroundScheduler()
+
+        def refresh_subnets():
+            try:
+                service = get_bittensor_service(
+                    network=config.BITTENSOR_NETWORK,
+                    cache_ttl=config.SUBNET_CACHE_TTL
+                )
+                subnets = service.get_all_subnets(use_cache=False)
+                logger.info(f"Background refresh: fetched {len(subnets)} subnets")
+            except Exception as e:
+                logger.error(f"Background refresh failed: {e}")
+
+        def refresh_price():
+            try:
+                service = get_price_service()
+                price = service.get_tao_price(use_cache=False)
+                if price:
+                    logger.info(f"Background refresh: TAO price ${price.price_usd:.2f}")
+            except Exception as e:
+                logger.error(f"Background price refresh failed: {e}")
+
+        scheduler.add_job(refresh_subnets, 'interval',
+                          seconds=config.REFRESH_INTERVAL,
+                          id='refresh_subnets', replace_existing=True)
+        scheduler.add_job(refresh_price, 'interval',
+                          seconds=config.PRICE_CACHE_TTL,
+                          id='refresh_price', replace_existing=True)
+
+        scheduler.start()
+        atexit.register(lambda: scheduler.shutdown(wait=False))
+
+        logger.info(f"Background refresh started (subnets every {config.REFRESH_INTERVAL}s, "
+                     f"price every {config.PRICE_CACHE_TTL}s)")
+
+        # Fetch price immediately, subnets in background thread
+        refresh_price()
+        threading.Thread(target=refresh_subnets, daemon=True).start()
+
+    except ImportError:
+        logger.warning("apscheduler not installed - background refresh disabled")
+    except Exception as e:
+        logger.error(f"Failed to start background scheduler: {e}")
