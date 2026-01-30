@@ -111,11 +111,28 @@ class PriceService:
             return None
 
     def _fetch_from_alternative(self) -> Optional[TaoPrice]:
-        """Fetch TAO price from alternative sources."""
-        # Try CoinMarketCap (requires API key, but has free tier)
-        # For now, return None as fallback
-        logger.warning("No alternative price source available")
-        return None
+        """Fetch TAO price from CoinGecko proxy/alternative endpoint."""
+        try:
+            # Try CoinGecko v3 coins endpoint as fallback
+            url = f"{self.COINGECKO_API}/coins/bittensor"
+            params = {"localization": "false", "tickers": "false", "community_data": "false", "developer_data": "false"}
+            response = requests.get(url, params=params, timeout=10)
+            response.raise_for_status()
+            data = response.json()
+            market = data.get("market_data", {})
+            return TaoPrice(
+                price_usd=market.get("current_price", {}).get("usd", 0),
+                price_aud=market.get("current_price", {}).get("aud"),
+                price_btc=market.get("current_price", {}).get("btc"),
+                market_cap_usd=market.get("market_cap", {}).get("usd"),
+                volume_24h_usd=market.get("total_volume", {}).get("usd"),
+                change_24h_percent=market.get("price_change_percentage_24h"),
+                source="coingecko-coins",
+                timestamp=datetime.now().isoformat()
+            )
+        except Exception as e:
+            logger.warning(f"Alternative price source failed: {e}")
+            return None
 
     def to_dict(self, price: TaoPrice) -> dict:
         """Convert TaoPrice to dict for JSON serialization."""

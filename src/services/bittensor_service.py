@@ -7,6 +7,7 @@ This approach works natively on Windows without requiring the bittensor SDK
 """
 
 import logging
+import requests
 from typing import Optional
 from dataclasses import dataclass, asdict
 from datetime import datetime
@@ -34,6 +35,26 @@ FINNEY_ENDPOINTS = [
 TESTNET_ENDPOINTS = [
     "wss://test.finney.opentensor.ai:443",
 ]
+
+# Subnet names from taostats community data
+SUBNET_NAMES_URL = "https://raw.githubusercontent.com/taostat/subnets-infos/main/subnets.json"
+_subnet_names: dict = {}
+
+
+def _fetch_subnet_names() -> dict:
+    """Fetch human-readable subnet names from the taostats GitHub repo."""
+    global _subnet_names
+    if _subnet_names:
+        return _subnet_names
+    try:
+        resp = requests.get(SUBNET_NAMES_URL, timeout=10)
+        resp.raise_for_status()
+        raw = resp.json()
+        _subnet_names = {int(k): v for k, v in raw.items()}
+        logger.info(f"Loaded {len(_subnet_names)} subnet names")
+    except Exception as e:
+        logger.warning(f"Failed to fetch subnet names: {e}")
+    return _subnet_names
 
 
 @dataclass
@@ -182,6 +203,9 @@ class BittensorService:
 
             total_emission = sum(float(emissions.get(n, 0)) for n in netuid_list)
 
+            # Fetch human-readable subnet names
+            subnet_names = _fetch_subnet_names()
+
             # Build SubnetInfo objects from batch data
             subnets = []
             now = datetime.now().isoformat()
@@ -202,9 +226,11 @@ class BittensorService:
                     symbol_raw = symbols.get(netuid)
                     symbol = self._decode_bytes(symbol_raw) or f"SN{netuid}"
 
+                    name = subnet_names.get(netuid, f"Subnet {netuid}")
+
                     subnets.append(SubnetInfo(
                         netuid=netuid,
-                        name=f"Subnet {netuid}",
+                        name=name,
                         symbol=symbol,
                         owner=str(owners.get(netuid, "Unknown")),
                         emission=round(_rao_to_tao(em), 6),
