@@ -1,12 +1,13 @@
 """
 Bittensor Blockchain Service
 
-Fetches subnet data from the Bittensor blockchain using async-substrate-interface.
-This approach works natively on Windows without requiring the bittensor SDK
-(which has Rust/Unix-only dependencies).
+Fetches subnet data from the Bittensor blockchain.
+Uses lightweight HTTP JSON-RPC calls to minimize memory usage on free hosting.
+Falls back to substrate-interface if available for single-subnet queries.
 """
 
 import gc
+import json
 import logging
 import requests
 from typing import Optional
@@ -15,6 +16,7 @@ from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
+# Try substrate-interface for single-query fallback (not used for batch fetching)
 try:
     from async_substrate_interface.sync_substrate import SubstrateInterface
     HAS_SUBSTRATE = True
@@ -24,16 +26,18 @@ except ImportError:
         HAS_SUBSTRATE = True
     except ImportError:
         HAS_SUBSTRATE = False
-        logger.warning("substrate-interface not installed. Run: pip install async-substrate-interface")
 
+# Bittensor finney endpoints (HTTP for JSON-RPC, WSS for substrate-interface)
+FINNEY_HTTP_ENDPOINTS = [
+    "https://entrypoint-finney.opentensor.ai:443",
+]
 
-# Bittensor finney endpoints
-FINNEY_ENDPOINTS = [
+FINNEY_WSS_ENDPOINTS = [
     "wss://entrypoint-finney.opentensor.ai:443",
     "wss://finney.opentensor.ai:443",
 ]
 
-TESTNET_ENDPOINTS = [
+TESTNET_WSS_ENDPOINTS = [
     "wss://test.finney.opentensor.ai:443",
 ]
 
@@ -91,6 +95,190 @@ def _decode_fixed_point(raw_value, fractional_bits: int = 32) -> float:
     return val / (2 ** fractional_bits)
 
 
+# ---------------------------------------------------------------------------
+# Lightweight JSON-RPC helper (no substrate-interface needed)
+# ---------------------------------------------------------------------------
+
+def _rpc_request(method: str, params: list, endpoint: str = None) -> Optional[dict]:
+    """Make a raw JSON-RPC request to a Bittensor node via HTTP POST."""
+    if endpoint is None:
+        endpoint = FINNEY_HTTP_ENDPOINTS[0]
+    payload = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": method,
+        "params": params
+    }
+    try:
+        resp = requests.post(endpoint, json=payload, timeout=30)
+        resp.raise_for_status()
+        data = resp.json()
+        if "error" in data:
+            logger.warning(f"RPC error for {method}: {data['error']}")
+            return None
+        return data.get("result")
+    except Exception as e:
+        logger.warning(f"RPC request {method} failed: {e}")
+        return None
+
+
+def _storage_key(pallet: str, storage: str) -> str:
+    """Compute the storage key prefix for a pallet+storage using xxhash128."""
+    import hashlib
+    # Substrate uses xxHash128 for storage keys
+    # We'll use the simpler approach: query via state_getKeys
+    # Actually, for state_getKeysPaged we need the prefix
+    # Let's compute it properly
+    try:
+        import xxhash
+        pallet_hash = xxhash.xxh128(pallet.encode()).hexdigest()
+        storage_hash = xxhash.xxh128(storage.encode()).hexdigest()
+        return "0x" + pallet_hash + storage_hash
+    except ImportError:
+        # Fallback: hardcoded keys for known storage functions
+        return _KNOWN_STORAGE_KEYS.get(f"{pallet}.{storage}", "")
+
+
+# Pre-computed storage key prefixes (xxHash128 of pallet + storage names)
+# These are deterministic and never change
+_KNOWN_STORAGE_KEYS = {}
+
+
+def _compute_storage_keys():
+    """Pre-compute all storage key prefixes we need using pure Python xxhash."""
+    global _KNOWN_STORAGE_KEYS
+    if _KNOWN_STORAGE_KEYS:
+        return
+
+    # xxHash128 implementation for substrate storage keys
+    # Substrate uses TwoX128(pallet_name) ++ TwoX128(storage_name)
+    try:
+        import xxhash
+        pallets_storages = [
+            ("SubtensorModule", "NetworksAdded"),
+            ("SubtensorModule", "SubnetTaoInEmission"),
+            ("SubtensorModule", "SubnetMovingPrice"),
+            ("SubtensorModule", "SubnetTAO"),
+            ("SubtensorModule", "SubnetAlphaIn"),
+            ("SubtensorModule", "Tempo"),
+            ("SubtensorModule", "SubnetworkN"),
+            ("SubtensorModule", "Burn"),
+        ]
+        for pallet, storage in pallets_storages:
+            ph = xxhash.xxh128(pallet.encode()).hexdigest()
+            sh = xxhash.xxh128(storage.encode()).hexdigest()
+            _KNOWN_STORAGE_KEYS[f"{pallet}.{storage}"] = "0x" + ph + sh
+    except ImportError:
+        logger.warning("xxhash not available, using hardcoded storage keys")
+        # Hardcoded keys (these are deterministic, computed from xxh128)
+        _KNOWN_STORAGE_KEYS = {
+            "SubtensorModule.NetworksAdded": "0x7769f2d2ca0534ecf5994b7abd13dfd237f540b7f502793c7bfe9cb3f6c0ad64",
+            "SubtensorModule.SubnetTaoInEmission": "0x7769f2d2ca0534ecf5994b7abd13dfd23e9ecb6a3dd1eea0a0af2436746847a9",
+            "SubtensorModule.SubnetMovingPrice": "0x7769f2d2ca0534ecf5994b7abd13dfd266fa46e411c323890ded4008779d3dc1",
+            "SubtensorModule.SubnetTAO": "0x7769f2d2ca0534ecf5994b7abd13dfd253fb8f1d003d137c52679d022eee60e1",
+            "SubtensorModule.SubnetAlphaIn": "0x7769f2d2ca0534ecf5994b7abd13dfd25a2d09c7483816a210dcb044050ab521",
+            "SubtensorModule.Tempo": "0x7769f2d2ca0534ecf5994b7abd13dfd23d822ed213a59180ae9441dc09b609d9",
+            "SubtensorModule.SubnetworkN": "0x7769f2d2ca0534ecf5994b7abd13dfd224371506f995c7cad55d8167796802e0",
+            "SubtensorModule.Burn": "0x7769f2d2ca0534ecf5994b7abd13dfd22bbabad73efc1395ca7f42e34095b2ea",
+        }
+
+
+def _query_map_rpc(storage_function: str, endpoint: str = None) -> dict:
+    """Query all key-value pairs for a storage function using raw JSON-RPC.
+
+    Uses state_getKeysPaged + state_queryStorageAt for minimal memory usage.
+    Returns {netuid: raw_value} dict.
+    """
+    _compute_storage_keys()
+    prefix = _KNOWN_STORAGE_KEYS.get(f"SubtensorModule.{storage_function}", "")
+    if not prefix:
+        logger.warning(f"No storage key for {storage_function}")
+        return {}
+
+    if endpoint is None:
+        endpoint = FINNEY_HTTP_ENDPOINTS[0]
+
+    result = {}
+    try:
+        # Get all keys with this prefix
+        all_keys = []
+        start_key = prefix
+        page_size = 1000
+        while True:
+            keys = _rpc_request("state_getKeysPaged", [prefix, page_size, start_key], endpoint)
+            if not keys:
+                break
+            all_keys.extend(keys)
+            if len(keys) < page_size:
+                break
+            start_key = keys[-1]
+
+        if not all_keys:
+            return {}
+
+        # Query values in batches
+        batch_size = 100
+        for i in range(0, len(all_keys), batch_size):
+            batch_keys = all_keys[i:i + batch_size]
+            # Use state_queryStorageAt for batch value retrieval
+            storage_result = _rpc_request("state_queryStorageAt", [batch_keys], endpoint)
+            if storage_result and isinstance(storage_result, list) and len(storage_result) > 0:
+                changes = storage_result[0].get("changes", [])
+                for key_hex, value_hex in changes:
+                    if value_hex is None:
+                        continue
+                    # Extract netuid from key (last 2 bytes = u16 little-endian)
+                    try:
+                        key_bytes = bytes.fromhex(key_hex[2:])  # strip 0x
+                        # For u16 keys, the netuid is the last 2 bytes
+                        netuid = int.from_bytes(key_bytes[-2:], 'little')
+                        # Decode value based on type
+                        value = _decode_rpc_value(value_hex, storage_function)
+                        result[netuid] = value
+                    except Exception as e:
+                        logger.debug(f"Failed to decode key/value: {e}")
+
+        gc.collect()
+
+    except Exception as e:
+        logger.warning(f"RPC query_map {storage_function} failed: {e}")
+
+    return result
+
+
+def _decode_rpc_value(hex_value: str, storage_function: str):
+    """Decode a hex-encoded storage value based on the storage type."""
+    if not hex_value or hex_value == "0x":
+        return 0
+
+    raw = bytes.fromhex(hex_value[2:])  # strip 0x
+
+    # Boolean (1 byte)
+    if storage_function == "NetworksAdded":
+        return bool(raw[0]) if raw else False
+
+    # u64 (8 bytes little-endian) - emissions, TAO reserves, alpha reserves, burn
+    if storage_function in ("SubnetTaoInEmission", "SubnetTAO", "SubnetAlphaIn", "Burn"):
+        return int.from_bytes(raw[:8], 'little') if len(raw) >= 8 else 0
+
+    # u64 fixed-point for SubnetMovingPrice
+    if storage_function == "SubnetMovingPrice":
+        return int.from_bytes(raw[:8], 'little') if len(raw) >= 8 else 0
+
+    # u16 (2 bytes) - tempo, neuron count
+    if storage_function in ("Tempo", "SubnetworkN"):
+        return int.from_bytes(raw[:2], 'little') if len(raw) >= 2 else 0
+
+    # Default: try as u64
+    if len(raw) >= 8:
+        return int.from_bytes(raw[:8], 'little')
+    return int.from_bytes(raw, 'little') if raw else 0
+
+
+# ---------------------------------------------------------------------------
+# Substrate-interface connection (used as fallback for single queries)
+# ---------------------------------------------------------------------------
+
 def _create_connection(endpoints, endpoint_index=0):
     """Create a new SubstrateInterface connection."""
     if not HAS_SUBSTRATE:
@@ -108,7 +296,7 @@ def _create_connection(endpoints, endpoint_index=0):
 
 
 class BittensorService:
-    """Service for interacting with the Bittensor blockchain via substrate-interface."""
+    """Service for interacting with the Bittensor blockchain."""
 
     def __init__(self, network: str = "finney", cache_ttl: int = 300):
         self.network = network
@@ -116,14 +304,14 @@ class BittensorService:
         self._cached_subnets: dict = {}
         self._cache_timestamp: Optional[datetime] = None
         self._cache_ttl_seconds = cache_ttl
-        self._endpoints = FINNEY_ENDPOINTS if network == "finney" else TESTNET_ENDPOINTS
+        self._wss_endpoints = FINNEY_WSS_ENDPOINTS if network == "finney" else TESTNET_WSS_ENDPOINTS
         self._endpoint_index = 0
         self._is_fetching = False
         self._fetch_started: Optional[datetime] = None
 
     def connect(self) -> bool:
         """Establish connection to the Bittensor network."""
-        self.substrate = _create_connection(self._endpoints, self._endpoint_index)
+        self.substrate = _create_connection(self._wss_endpoints, self._endpoint_index)
         return self.substrate is not None
 
     def _ensure_connected(self) -> bool:
@@ -162,46 +350,24 @@ class BittensorService:
             self._is_fetching = False
 
     def _do_fetch_all(self) -> list[SubnetInfo]:
-        """Fetch all subnets using fresh connections per query to minimize memory."""
-
-        def _query_map_fresh(storage_function):
-            """Open a fresh connection, run one query_map, close, return simple dict."""
-            conn = _create_connection(self._endpoints, self._endpoint_index)
-            if not conn:
-                return {}
-            result = {}
-            try:
-                qm = conn.query_map(
-                    module="SubtensorModule",
-                    storage_function=storage_function
-                )
-                for key, val in qm:
-                    k = int(key.value if hasattr(key, 'value') else key)
-                    v = val.value if hasattr(val, 'value') else val
-                    result[k] = v
-            except Exception as e:
-                logger.warning(f"query_map {storage_function} failed: {e}")
-            finally:
-                try:
-                    conn.close()
-                except Exception:
-                    pass
-                del conn
-                gc.collect()
-            return result
-
+        """Fetch all subnets using lightweight HTTP JSON-RPC calls."""
         try:
-            logger.info("Fetching all subnets (low-memory mode)...")
+            logger.info("Fetching all subnets via HTTP JSON-RPC...")
+            endpoint = FINNEY_HTTP_ENDPOINTS[0]
 
             # Step 1: Get active netuids
-            networks = _query_map_fresh("NetworksAdded")
+            networks = _query_map_rpc("NetworksAdded", endpoint)
             netuid_set = set(k for k, v in networks.items() if v)
             del networks
             gc.collect()
             logger.info(f"Found {len(netuid_set)} active subnets")
 
+            if not netuid_set:
+                logger.warning("No active subnets found")
+                return list(self._cached_subnets.values()) if self._cached_subnets else []
+
             # Step 2: Emissions
-            emissions = _query_map_fresh("SubnetTaoInEmission")
+            emissions = _query_map_rpc("SubnetTaoInEmission", endpoint)
             total_emission = sum(float(emissions.get(n, 0)) for n in netuid_set)
             data = {}
             for n in netuid_set:
@@ -210,7 +376,7 @@ class BittensorService:
             del emissions
             gc.collect()
 
-            # Step 3: Fetch essential fields only (skip owner, symbol to save memory)
+            # Step 3: Fetch remaining fields one at a time
             for field, storage in [
                 ('price', 'SubnetMovingPrice'),
                 ('tao_r', 'SubnetTAO'),
@@ -219,7 +385,7 @@ class BittensorService:
                 ('neurons', 'SubnetworkN'),
                 ('burn', 'Burn'),
             ]:
-                raw = _query_map_fresh(storage)
+                raw = _query_map_rpc(storage, endpoint)
                 for n in netuid_set:
                     data[n][field] = raw.get(n, 0)
                 del raw
@@ -236,8 +402,6 @@ class BittensorService:
                 try:
                     d = data[netuid]
                     raw_price = d['price']
-                    if isinstance(raw_price, dict):
-                        raw_price = raw_price.get('bits', 0)
 
                     tao_in = _rao_to_tao(d['tao_r'])
                     name = subnet_names.get(netuid, f"Subnet {netuid}")
@@ -277,111 +441,6 @@ class BittensorService:
                 return list(self._cached_subnets.values())
             return []
 
-    def _fetch_subnet_with(self, substrate, netuid: int, emission: float,
-                           total_emission: float) -> Optional[SubnetInfo]:
-        """Fetch data for a single subnet using the provided connection."""
-        emission_pct = (emission / total_emission * 100) if total_emission > 0 else 0
-
-        def qv(storage_function, params=None):
-            """Query a value from the blockchain."""
-            try:
-                result = substrate.query(
-                    module="SubtensorModule",
-                    storage_function=storage_function,
-                    params=params or []
-                )
-                if result is None:
-                    return None
-                return result.value if hasattr(result, 'value') else result
-            except Exception:
-                return None
-
-        owner = qv("SubnetOwner", [netuid]) or "Unknown"
-        tempo = qv("Tempo", [netuid]) or 0
-        neurons = qv("SubnetworkN", [netuid]) or 0
-
-        # Alpha price
-        raw_price = qv("SubnetMovingPrice", [netuid])
-        if isinstance(raw_price, dict):
-            raw_price = raw_price.get('bits', 0)
-        alpha_price = _decode_fixed_point(raw_price, 32)
-
-        # Reserve pool data
-        tao_in = _rao_to_tao(qv("SubnetTAO", [netuid]))
-        alpha_in = _rao_to_tao(qv("SubnetAlphaIn", [netuid]))
-
-        # Registration cost
-        burn = _rao_to_tao(qv("Burn", [netuid]))
-
-        # Subnet name
-        name_raw = None
-        for name_key in ["SubnetName", "NetworksName", "SubnetIdentity"]:
-            name_raw = qv(name_key, [netuid])
-            if name_raw:
-                break
-
-        # Token symbol
-        symbol_raw = qv("TokenSymbol", [netuid])
-
-        name = self._decode_bytes(name_raw) or f"Subnet {netuid}"
-        symbol = self._decode_bytes(symbol_raw) or f"SN{netuid}"
-
-        return SubnetInfo(
-            netuid=netuid,
-            name=name,
-            symbol=symbol,
-            owner=str(owner),
-            emission=round(_rao_to_tao(emission), 6),
-            emission_percentage=round(emission_pct, 4),
-            tempo=int(tempo or 0),
-            neurons=int(neurons or 0),
-            registration_cost=round(burn, 4),
-            alpha_price=round(alpha_price, 8),
-            tao_in_reserve=round(tao_in, 4),
-            alpha_in_reserve=round(alpha_in, 4),
-            subnet_tao=round(tao_in, 4),
-            timestamp=datetime.now().isoformat()
-        )
-
-    # Keep old method name for compatibility with wallet_service
-    def _fetch_subnet(self, netuid: int, emission: float, total_emission: float) -> Optional[SubnetInfo]:
-        if self.substrate is None:
-            self.connect()
-        return self._fetch_subnet_with(self.substrate, netuid, emission, total_emission)
-
-    def _query(self, module: str, storage_function: str, params=None):
-        """Execute a substrate query."""
-        try:
-            if params:
-                return self.substrate.query(
-                    module=module,
-                    storage_function=storage_function,
-                    params=params
-                )
-            else:
-                return self.substrate.query_map(
-                    module=module,
-                    storage_function=storage_function
-                )
-        except Exception as e:
-            logger.debug(f"Query {module}.{storage_function} failed: {e}")
-            return None
-
-    def _query_value(self, module: str, storage_function: str, params=None):
-        """Execute a substrate query and return the raw value."""
-        try:
-            result = self.substrate.query(
-                module=module,
-                storage_function=storage_function,
-                params=params or []
-            )
-            if result is None:
-                return None
-            return result.value if hasattr(result, 'value') else result
-        except Exception as e:
-            logger.debug(f"Query {module}.{storage_function}({params}) failed: {e}")
-            return None
-
     def _decode_bytes(self, raw) -> str:
         """Decode a bytes value from the blockchain into a string."""
         if raw is None:
@@ -398,26 +457,16 @@ class BittensorService:
         """Fetch information for a specific subnet."""
         if netuid in self._cached_subnets:
             return self._cached_subnets[netuid]
-
-        if not self._ensure_connected():
-            return None
-
-        try:
-            emission = float(self._query_value("SubtensorModule", "SubnetTaoInEmission", [netuid]) or 0)
-            return self._fetch_subnet(netuid, emission, emission or 1)
-        except Exception as e:
-            logger.error(f"Failed to fetch subnet {netuid}: {e}")
-            return None
+        # Try from cache via full fetch
+        subnets = self.get_all_subnets()
+        return self._cached_subnets.get(netuid)
 
     def get_current_block(self) -> int:
-        """Get the current block number."""
-        if not self._ensure_connected():
-            return 0
-        try:
-            return self.substrate.get_block_number(None) or 0
-        except Exception as e:
-            logger.error(f"Failed to get current block: {e}")
-            return 0
+        """Get the current block number via JSON-RPC."""
+        result = _rpc_request("chain_getHeader", [])
+        if result and "number" in result:
+            return int(result["number"], 16)
+        return 0
 
     def get_subnet_by_netuid(self, netuid: int) -> Optional[SubnetInfo]:
         """Get cached subnet info by netuid, fetching all if cache is empty."""
