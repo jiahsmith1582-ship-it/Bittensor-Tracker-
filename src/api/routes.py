@@ -43,7 +43,7 @@ def get_tao_price():
     price = price_service.get_tao_price()
 
     if not price:
-        return jsonify({'error': 'Failed to fetch TAO price'}), 500
+        return jsonify({'error': 'Price temporarily unavailable - CoinGecko rate limited'}), 503
 
     return jsonify(price_service.to_dict(price))
 

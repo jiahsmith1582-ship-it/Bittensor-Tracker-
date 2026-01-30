@@ -6,6 +6,7 @@ This approach works natively on Windows without requiring the bittensor SDK
 (which has Rust/Unix-only dependencies).
 """
 
+import gc
 import logging
 import requests
 from typing import Optional
@@ -161,17 +162,17 @@ class BittensorService:
             self._is_fetching = False
 
     def _do_fetch_all(self) -> list[SubnetInfo]:
-        """Fetch all subnets using batch query_map calls (~20s instead of ~20min)."""
+        """Fetch all subnets using batch query_map calls, optimized for low memory."""
         substrate = _create_connection(self._endpoints, self._endpoint_index)
         if not substrate:
             logger.error("Cannot connect to any endpoint")
             return list(self._cached_subnets.values()) if self._cached_subnets else []
 
         try:
-            logger.info("Fetching all subnets (batch mode)...")
+            logger.info("Fetching all subnets (batch mode, low-memory)...")
 
-            def query_map_to_dict(storage_function):
-                """Batch-fetch all values for a storage function."""
+            def query_map_simple(storage_function):
+                """Fetch query_map and extract only simple Python values."""
                 result = {}
                 try:
                     qm = substrate.query_map(
@@ -184,68 +185,84 @@ class BittensorService:
                         result[k] = v
                 except Exception as e:
                     logger.warning(f"query_map {storage_function} failed: {e}")
+                gc.collect()
                 return result
 
-            # Batch fetch all data (~2s per query_map call)
-            networks = query_map_to_dict("NetworksAdded")
-            netuid_list = [k for k, v in networks.items() if v]
-            logger.info(f"Found {len(netuid_list)} active subnets")
+            # Step 1: Get active netuids
+            networks = query_map_simple("NetworksAdded")
+            netuid_set = set(k for k, v in networks.items() if v)
+            del networks
+            gc.collect()
+            logger.info(f"Found {len(netuid_set)} active subnets")
 
-            emissions = query_map_to_dict("SubnetTaoInEmission")
-            prices = query_map_to_dict("SubnetMovingPrice")
-            tao_reserves = query_map_to_dict("SubnetTAO")
-            alpha_reserves = query_map_to_dict("SubnetAlphaIn")
-            tempos = query_map_to_dict("Tempo")
-            neuron_counts = query_map_to_dict("SubnetworkN")
-            burns = query_map_to_dict("Burn")
-            owners = query_map_to_dict("SubnetOwner")
-            symbols = query_map_to_dict("TokenSymbol")
+            # Step 2: Fetch emissions first (needed for percentage calc)
+            emissions = query_map_simple("SubnetTaoInEmission")
+            total_emission = sum(float(emissions.get(n, 0)) for n in netuid_set)
 
-            total_emission = sum(float(emissions.get(n, 0)) for n in netuid_list)
+            # Step 3: Fetch remaining data one at a time, build results incrementally
+            # Store per-netuid data in a compact dict-of-dicts
+            data = {}
+            for n in netuid_set:
+                em = float(emissions.get(n, 0))
+                data[n] = {'em': em, 'em_pct': (em / total_emission * 100) if total_emission > 0 else 0}
+            del emissions
+            gc.collect()
+
+            # Fetch each field and merge into data, then discard
+            for field, storage in [
+                ('price', 'SubnetMovingPrice'),
+                ('tao_r', 'SubnetTAO'),
+                ('alpha_r', 'SubnetAlphaIn'),
+                ('tempo', 'Tempo'),
+                ('neurons', 'SubnetworkN'),
+                ('burn', 'Burn'),
+                ('owner', 'SubnetOwner'),
+                ('symbol', 'TokenSymbol'),
+            ]:
+                raw = query_map_simple(storage)
+                for n in netuid_set:
+                    data[n][field] = raw.get(n, 0)
+                del raw
+                gc.collect()
 
             # Fetch human-readable subnet names
             subnet_names = _fetch_subnet_names()
 
-            # Build SubnetInfo objects from batch data
+            # Build SubnetInfo objects
             subnets = []
             now = datetime.now().isoformat()
-            for netuid in sorted(netuid_list):
+            for netuid in sorted(netuid_set):
                 try:
-                    em = float(emissions.get(netuid, 0))
-                    em_pct = (em / total_emission * 100) if total_emission > 0 else 0
-
-                    raw_price = prices.get(netuid, 0)
+                    d = data[netuid]
+                    raw_price = d['price']
                     if isinstance(raw_price, dict):
                         raw_price = raw_price.get('bits', 0)
-                    alpha_price = _decode_fixed_point(raw_price, 32)
 
-                    tao_in = _rao_to_tao(tao_reserves.get(netuid, 0))
-                    alpha_in = _rao_to_tao(alpha_reserves.get(netuid, 0))
-                    burn = _rao_to_tao(burns.get(netuid, 0))
-
-                    symbol_raw = symbols.get(netuid)
-                    symbol = self._decode_bytes(symbol_raw) or f"SN{netuid}"
-
+                    tao_in = _rao_to_tao(d['tao_r'])
+                    symbol = self._decode_bytes(d['symbol']) or f"SN{netuid}"
                     name = subnet_names.get(netuid, f"Subnet {netuid}")
 
                     subnets.append(SubnetInfo(
                         netuid=netuid,
                         name=name,
                         symbol=symbol,
-                        owner=str(owners.get(netuid, "Unknown")),
-                        emission=round(_rao_to_tao(em), 6),
-                        emission_percentage=round(em_pct, 4),
-                        tempo=int(tempos.get(netuid, 0)),
-                        neurons=int(neuron_counts.get(netuid, 0)),
-                        registration_cost=round(burn, 4),
-                        alpha_price=round(alpha_price, 8),
+                        owner=str(d.get('owner', 'Unknown')),
+                        emission=round(_rao_to_tao(d['em']), 6),
+                        emission_percentage=round(d['em_pct'], 4),
+                        tempo=int(d.get('tempo', 0)),
+                        neurons=int(d.get('neurons', 0)),
+                        registration_cost=round(_rao_to_tao(d['burn']), 4),
+                        alpha_price=round(_decode_fixed_point(raw_price, 32), 8),
                         tao_in_reserve=round(tao_in, 4),
-                        alpha_in_reserve=round(alpha_in, 4),
+                        alpha_in_reserve=round(_rao_to_tao(d['alpha_r']), 4),
                         subnet_tao=round(tao_in, 4),
                         timestamp=now
                     ))
                 except Exception as e:
                     logger.warning(f"Failed to build subnet {netuid}: {e}")
+
+            del data
+            gc.collect()
 
             # Update cache
             self._cached_subnets = {s.netuid: s for s in subnets}
