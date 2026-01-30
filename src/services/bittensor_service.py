@@ -162,45 +162,47 @@ class BittensorService:
             self._is_fetching = False
 
     def _do_fetch_all(self) -> list[SubnetInfo]:
-        """Fetch all subnets using batch query_map calls, optimized for low memory."""
-        substrate = _create_connection(self._endpoints, self._endpoint_index)
-        if not substrate:
-            logger.error("Cannot connect to any endpoint")
-            return list(self._cached_subnets.values()) if self._cached_subnets else []
+        """Fetch all subnets using fresh connections per query to minimize memory."""
+
+        def _query_map_fresh(storage_function):
+            """Open a fresh connection, run one query_map, close, return simple dict."""
+            conn = _create_connection(self._endpoints, self._endpoint_index)
+            if not conn:
+                return {}
+            result = {}
+            try:
+                qm = conn.query_map(
+                    module="SubtensorModule",
+                    storage_function=storage_function
+                )
+                for key, val in qm:
+                    k = int(key.value if hasattr(key, 'value') else key)
+                    v = val.value if hasattr(val, 'value') else val
+                    result[k] = v
+            except Exception as e:
+                logger.warning(f"query_map {storage_function} failed: {e}")
+            finally:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+                del conn
+                gc.collect()
+            return result
 
         try:
-            logger.info("Fetching all subnets (batch mode, low-memory)...")
-
-            def query_map_simple(storage_function):
-                """Fetch query_map and extract only simple Python values."""
-                result = {}
-                try:
-                    qm = substrate.query_map(
-                        module="SubtensorModule",
-                        storage_function=storage_function
-                    )
-                    for key, val in qm:
-                        k = int(key.value if hasattr(key, 'value') else key)
-                        v = val.value if hasattr(val, 'value') else val
-                        result[k] = v
-                except Exception as e:
-                    logger.warning(f"query_map {storage_function} failed: {e}")
-                gc.collect()
-                return result
+            logger.info("Fetching all subnets (low-memory mode)...")
 
             # Step 1: Get active netuids
-            networks = query_map_simple("NetworksAdded")
+            networks = _query_map_fresh("NetworksAdded")
             netuid_set = set(k for k, v in networks.items() if v)
             del networks
             gc.collect()
             logger.info(f"Found {len(netuid_set)} active subnets")
 
-            # Step 2: Fetch emissions first (needed for percentage calc)
-            emissions = query_map_simple("SubnetTaoInEmission")
+            # Step 2: Emissions
+            emissions = _query_map_fresh("SubnetTaoInEmission")
             total_emission = sum(float(emissions.get(n, 0)) for n in netuid_set)
-
-            # Step 3: Fetch remaining data one at a time, build results incrementally
-            # Store per-netuid data in a compact dict-of-dicts
             data = {}
             for n in netuid_set:
                 em = float(emissions.get(n, 0))
@@ -208,7 +210,7 @@ class BittensorService:
             del emissions
             gc.collect()
 
-            # Fetch each field and merge into data, then discard
+            # Step 3: Fetch essential fields only (skip owner, symbol to save memory)
             for field, storage in [
                 ('price', 'SubnetMovingPrice'),
                 ('tao_r', 'SubnetTAO'),
@@ -216,16 +218,15 @@ class BittensorService:
                 ('tempo', 'Tempo'),
                 ('neurons', 'SubnetworkN'),
                 ('burn', 'Burn'),
-                ('owner', 'SubnetOwner'),
-                ('symbol', 'TokenSymbol'),
             ]:
-                raw = query_map_simple(storage)
+                raw = _query_map_fresh(storage)
                 for n in netuid_set:
                     data[n][field] = raw.get(n, 0)
                 del raw
                 gc.collect()
+                logger.info(f"Fetched {field}")
 
-            # Fetch human-readable subnet names
+            # Fetch human-readable subnet names (small HTTP request)
             subnet_names = _fetch_subnet_names()
 
             # Build SubnetInfo objects
@@ -239,14 +240,13 @@ class BittensorService:
                         raw_price = raw_price.get('bits', 0)
 
                     tao_in = _rao_to_tao(d['tao_r'])
-                    symbol = self._decode_bytes(d['symbol']) or f"SN{netuid}"
                     name = subnet_names.get(netuid, f"Subnet {netuid}")
 
                     subnets.append(SubnetInfo(
                         netuid=netuid,
                         name=name,
-                        symbol=symbol,
-                        owner=str(d.get('owner', 'Unknown')),
+                        symbol=f"SN{netuid}",
+                        owner="",
                         emission=round(_rao_to_tao(d['em']), 6),
                         emission_percentage=round(d['em_pct'], 4),
                         tempo=int(d.get('tempo', 0)),
@@ -267,7 +267,6 @@ class BittensorService:
             # Update cache
             self._cached_subnets = {s.netuid: s for s in subnets}
             self._cache_timestamp = datetime.now()
-            self.substrate = substrate
 
             logger.info(f"Successfully fetched {len(subnets)} subnets")
             return subnets
