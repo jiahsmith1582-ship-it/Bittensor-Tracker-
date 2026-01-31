@@ -275,6 +275,56 @@ def get_wallet_stakes(address: str):
 
 
 # ---------------------------------------------------------------------------
+# Wallet Transfers & Delegations
+# ---------------------------------------------------------------------------
+
+@api.route('/wallet/<address>/transfers', methods=['GET'])
+def get_wallet_transfers(address: str):
+    """Get recent TAO transfers for a wallet."""
+    limit = request.args.get('limit', 50, type=int)
+    wallet_service = get_wallet_service()
+    transfers = wallet_service.get_transfers(address, limit=limit)
+    return jsonify({'coldkey': address, 'count': len(transfers), 'transfers': transfers})
+
+
+@api.route('/wallet/<address>/delegations', methods=['GET'])
+def get_wallet_delegations(address: str):
+    """Get recent delegation (stake/unstake) events for a wallet."""
+    limit = request.args.get('limit', 50, type=int)
+    wallet_service = get_wallet_service()
+    delegations = wallet_service.get_delegations(address, limit=limit)
+    return jsonify({'coldkey': address, 'count': len(delegations), 'delegations': delegations})
+
+
+@api.route('/sheets/transfers', methods=['GET'])
+def sheets_transfers():
+    """Google Sheets CSV for wallet transfers."""
+    address = request.args.get('address', '').strip()
+    if not address:
+        return Response("error\nMissing 'address' query parameter\n", mimetype='text/csv')
+    limit = request.args.get('limit', 50, type=int)
+    wallet_service = get_wallet_service()
+    transfers = wallet_service.get_transfers(address, limit=limit)
+    if not transfers:
+        return Response("block,timestamp,from,to,amount_tao,fee_tao,extrinsic_id\n", mimetype='text/csv')
+    return _to_csv_response(transfers)
+
+
+@api.route('/sheets/delegations', methods=['GET'])
+def sheets_delegations():
+    """Google Sheets CSV for wallet delegation events."""
+    address = request.args.get('address', '').strip()
+    if not address:
+        return Response("error\nMissing 'address' query parameter\n", mimetype='text/csv')
+    limit = request.args.get('limit', 50, type=int)
+    wallet_service = get_wallet_service()
+    delegations = wallet_service.get_delegations(address, limit=limit)
+    if not delegations:
+        return Response("block,timestamp,action,netuid,delegate_name,delegate,amount_tao,alpha,alpha_price_tao,extrinsic_id\n", mimetype='text/csv')
+    return _to_csv_response(delegations)
+
+
+# ---------------------------------------------------------------------------
 # Block Info
 # ---------------------------------------------------------------------------
 

@@ -126,6 +126,67 @@ class WalletService:
             logger.error(f"Failed to get portfolio for {coldkey_ss58[:12]}...: {e}")
             return None
 
+    def get_transfers(self, coldkey_ss58: str, limit: int = 50) -> list[dict]:
+        """Get recent TAO transfers for a coldkey."""
+        try:
+            api_key = config.TAOSTATS_API_KEY
+            if not api_key:
+                return []
+            resp = requests.get(
+                f"{TAOSTATS_BASE}/transfer/v1",
+                headers={"Authorization": api_key},
+                params={"address": coldkey_ss58, "limit": limit},
+                timeout=15
+            )
+            resp.raise_for_status()
+            rows = []
+            for t in resp.json().get("data", []):
+                rows.append({
+                    "block": t.get("block_number", 0),
+                    "timestamp": t.get("timestamp", ""),
+                    "from": t.get("from", {}).get("ss58", ""),
+                    "to": t.get("to", {}).get("ss58", ""),
+                    "amount_tao": round(_rao_to_tao(t.get("amount", 0)), 6),
+                    "fee_tao": round(_rao_to_tao(t.get("fee", 0)), 9),
+                    "extrinsic_id": t.get("extrinsic_id", ""),
+                })
+            return rows
+        except Exception as e:
+            logger.error(f"Failed to get transfers: {e}")
+            return []
+
+    def get_delegations(self, coldkey_ss58: str, limit: int = 50) -> list[dict]:
+        """Get recent delegation (stake/unstake) events for a coldkey."""
+        try:
+            api_key = config.TAOSTATS_API_KEY
+            if not api_key:
+                return []
+            resp = requests.get(
+                f"{TAOSTATS_BASE}/delegation/v1",
+                headers={"Authorization": api_key},
+                params={"address": coldkey_ss58, "limit": limit},
+                timeout=15
+            )
+            resp.raise_for_status()
+            rows = []
+            for d in resp.json().get("data", []):
+                rows.append({
+                    "block": d.get("block_number", 0),
+                    "timestamp": d.get("timestamp", ""),
+                    "action": d.get("action", ""),
+                    "netuid": d.get("netuid", 0),
+                    "delegate_name": d.get("delegate_name", ""),
+                    "delegate": d.get("delegate", {}).get("ss58", ""),
+                    "amount_tao": round(_rao_to_tao(d.get("amount", 0)), 6),
+                    "alpha": round(_rao_to_tao(d.get("alpha", 0)), 6),
+                    "alpha_price_tao": d.get("alpha_price_in_tao", "0"),
+                    "extrinsic_id": d.get("extrinsic_id", ""),
+                })
+            return rows
+        except Exception as e:
+            logger.error(f"Failed to get delegations: {e}")
+            return []
+
     def to_dict(self, portfolio: WalletPortfolio) -> dict:
         return asdict(portfolio)
 

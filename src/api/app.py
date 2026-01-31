@@ -59,9 +59,13 @@ def create_app(config: dict = None) -> Flask:
                 'subnet_emissions': '/api/v1/subnets/emissions',
                 'wallet_portfolio': '/api/v1/wallet/<address>/portfolio',
                 'wallet_stakes': '/api/v1/wallet/<address>/stakes',
+                'wallet_transfers': '/api/v1/wallet/<address>/transfers',
+                'wallet_delegations': '/api/v1/wallet/<address>/delegations',
                 'sheets_subnets': '/api/v1/sheets/subnets',
                 'sheets_portfolio': '/api/v1/sheets/portfolio?address=<SS58>',
                 'sheets_stakes': '/api/v1/sheets/stakes?address=<SS58>',
+                'sheets_transfers': '/api/v1/sheets/transfers?address=<SS58>',
+                'sheets_delegations': '/api/v1/sheets/delegations?address=<SS58>',
                 'current_block': '/api/v1/block'
             },
             'usage': {
