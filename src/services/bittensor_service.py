@@ -68,16 +68,9 @@ class SubnetInfo:
     netuid: int
     name: str
     symbol: str
-    owner: str
     emission: float
     emission_percentage: float
-    tempo: int
-    neurons: int
-    registration_cost: float
     alpha_price: float       # TAO per alpha token
-    tao_in_reserve: float    # TAO in the subnet's reserve pool
-    alpha_in_reserve: float  # Alpha tokens in the subnet's reserve pool
-    subnet_tao: float        # Total TAO in subnet
     timestamp: str
 
 
@@ -409,25 +402,15 @@ class BittensorService:
             del emissions
             gc.collect()
 
-            # Step 3: Fetch all remaining fields in one combined batch
-            # Build keys for all storage functions and all netuids at once
-            storage_fields = [
-                ('price', 'SubnetMovingPrice'),
-                ('tao_r', 'SubnetTAO'),
-                ('alpha_r', 'SubnetAlphaIn'),
-                ('tempo', 'Tempo'),
-                ('neurons', 'SubnetworkN'),
-                ('burn', 'Burn'),
-            ]
+            # Step 3: Fetch alpha prices only (minimal RPC calls)
+            storage_fields = [('price', 'SubnetMovingPrice')]
             combined = _query_combined_rpc(netuid_set, storage_fields, endpoint)
             for n in netuid_set:
-                for field, _ in storage_fields:
-                    data[n][field] = combined.get(field, {}).get(n, 0)
+                data[n]['price'] = combined.get('price', {}).get(n, 0)
             del combined
             gc.collect()
-            for field, _ in storage_fields:
-                non_zero = len([n for n in netuid_set if data[n][field] != 0])
-                logger.info(f"Fetched {field} ({non_zero} non-zero)")
+            non_zero = len([n for n in netuid_set if data[n]['price'] != 0])
+            logger.info(f"Fetched alpha prices ({non_zero} non-zero)")
 
             # Fetch human-readable subnet names (small HTTP request)
             subnet_names = _fetch_subnet_names()
@@ -438,9 +421,6 @@ class BittensorService:
             for netuid in sorted(netuid_set):
                 try:
                     d = data[netuid]
-                    raw_price = d['price']
-
-                    tao_in = _rao_to_tao(d['tao_r'])
                     raw_name = subnet_names.get(netuid, f"Subnet {netuid}")
                     name = raw_name.get("name", str(raw_name)) if isinstance(raw_name, dict) else str(raw_name)
 
@@ -448,16 +428,9 @@ class BittensorService:
                         netuid=netuid,
                         name=name,
                         symbol=f"SN{netuid}",
-                        owner="",
                         emission=round(_rao_to_tao(d['em']), 6),
                         emission_percentage=round(d['em_pct'], 4),
-                        tempo=int(d.get('tempo', 0)),
-                        neurons=int(d.get('neurons', 0)),
-                        registration_cost=round(_rao_to_tao(d['burn']), 4),
-                        alpha_price=round(_decode_fixed_point(raw_price, 32), 8),
-                        tao_in_reserve=round(tao_in, 4),
-                        alpha_in_reserve=round(_rao_to_tao(d['alpha_r']), 4),
-                        subnet_tao=round(tao_in, 4),
+                        alpha_price=round(_decode_fixed_point(d['price'], 32), 8),
                         timestamp=now
                     ))
                 except Exception as e:

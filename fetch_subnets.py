@@ -47,16 +47,16 @@ def fetch_subnets(netuid: int = None):
         print("Fetching all subnets (this may take a moment)...")
         subnets = service.get_all_subnets(use_cache=False)
         print(f"\nFound {len(subnets)} subnets:\n")
-        print("-" * 110)
-        print(f"{'NetUID':<8} {'Name':<20} {'Symbol':<10} {'Emission %':<12} {'Alpha Price':<14} {'TAO Reserve':<12} {'Neurons':<10}")
-        print("-" * 110)
+        print("-" * 70)
+        print(f"{'NetUID':<8} {'Name':<20} {'Symbol':<10} {'Emission %':<12} {'Alpha Price':<14}")
+        print("-" * 70)
 
         for s in sorted(subnets, key=lambda x: x.netuid):
             name = s.name[:19].encode('ascii', 'replace').decode('ascii')
             symbol = s.symbol.encode('ascii', 'replace').decode('ascii')
-            print(f"{s.netuid:<8} {name:<20} {symbol:<10} {s.emission_percentage:<12.4f} {s.alpha_price:<14.8f} {s.tao_in_reserve:<12.4f} {s.neurons:<10}")
+            print(f"{s.netuid:<8} {name:<20} {symbol:<10} {s.emission_percentage:<12.4f} {s.alpha_price:<14.8f}")
 
-        print("-" * 110)
+        print("-" * 70)
 
 
 

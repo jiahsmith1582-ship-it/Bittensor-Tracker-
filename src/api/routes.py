@@ -137,7 +137,7 @@ def sheets_subnets():
 
     if not subnets:
         return Response(
-            "netuid,name,symbol,emission_pct,neurons,alpha_price,tao_in_reserve,alpha_in_reserve,subnet_tao,reg_cost_tao\n",
+            "netuid,name,symbol,emission_pct,alpha_price\n",
             mimetype='text/csv'
         )
 
@@ -147,12 +147,7 @@ def sheets_subnets():
             'name': s.name,
             'symbol': s.symbol,
             'emission_pct': s.emission_percentage,
-            'neurons': s.neurons,
             'alpha_price': s.alpha_price,
-            'tao_in_reserve': s.tao_in_reserve,
-            'alpha_in_reserve': s.alpha_in_reserve,
-            'subnet_tao': s.subnet_tao,
-            'reg_cost_tao': s.registration_cost
         }
         for s in sorted(subnets, key=lambda x: x.netuid)
     ]
