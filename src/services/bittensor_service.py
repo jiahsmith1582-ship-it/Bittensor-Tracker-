@@ -8,6 +8,7 @@ Falls back to substrate-interface if available for single-subnet queries.
 
 import gc
 import logging
+import time
 import requests
 from typing import Optional
 from dataclasses import dataclass, asdict
@@ -136,7 +137,7 @@ _KNOWN_STORAGE_KEYS = {
     }
 
 
-def _query_map_rpc(storage_function: str, endpoint: str = None) -> dict:
+def _query_map_rpc(storage_function: str, endpoint: str = None, retries: int = 2) -> dict:
     """Query all key-value pairs for a storage function using raw JSON-RPC.
 
     Uses state_getKeysPaged + state_queryStorageAt for minimal memory usage.
@@ -150,51 +151,64 @@ def _query_map_rpc(storage_function: str, endpoint: str = None) -> dict:
     if endpoint is None:
         endpoint = FINNEY_HTTP_ENDPOINTS[0]
 
-    result = {}
-    try:
-        # Get all keys with this prefix
-        all_keys = []
-        start_key = None
-        page_size = 1000
-        while True:
-            params = [prefix, page_size] if start_key is None else [prefix, page_size, start_key]
-            keys = _rpc_request("state_getKeysPaged", params, endpoint)
-            if not keys:
-                break
-            all_keys.extend(keys)
-            if len(keys) < page_size:
-                break
-            start_key = keys[-1]
+    for attempt in range(retries + 1):
+        result = {}
+        try:
+            # Get all keys with this prefix
+            all_keys = []
+            start_key = None
+            page_size = 1000
+            while True:
+                params = [prefix, page_size] if start_key is None else [prefix, page_size, start_key]
+                keys = _rpc_request("state_getKeysPaged", params, endpoint)
+                if not keys:
+                    break
+                all_keys.extend(keys)
+                if len(keys) < page_size:
+                    break
+                start_key = keys[-1]
 
-        if not all_keys:
-            return {}
+            if not all_keys:
+                if attempt < retries:
+                    time.sleep(2)
+                    continue
+                return {}
 
-        # Query values in batches
-        batch_size = 100
-        for i in range(0, len(all_keys), batch_size):
-            batch_keys = all_keys[i:i + batch_size]
-            # Use state_queryStorageAt for batch value retrieval
-            storage_result = _rpc_request("state_queryStorageAt", [batch_keys], endpoint)
-            if storage_result and isinstance(storage_result, list) and len(storage_result) > 0:
-                changes = storage_result[0].get("changes", [])
-                for key_hex, value_hex in changes:
-                    if value_hex is None:
-                        continue
-                    # Extract netuid from key (last 2 bytes = u16 little-endian)
-                    try:
-                        key_bytes = bytes.fromhex(key_hex[2:])  # strip 0x
-                        # For u16 keys, the netuid is the last 2 bytes
-                        netuid = int.from_bytes(key_bytes[-2:], 'little')
-                        # Decode value based on type
-                        value = _decode_rpc_value(value_hex, storage_function)
-                        result[netuid] = value
-                    except Exception as e:
-                        logger.debug(f"Failed to decode key/value: {e}")
+            # Query values in batches
+            batch_size = 50
+            for i in range(0, len(all_keys), batch_size):
+                batch_keys = all_keys[i:i + batch_size]
+                storage_result = _rpc_request("state_queryStorageAt", [batch_keys], endpoint)
+                if storage_result and isinstance(storage_result, list) and len(storage_result) > 0:
+                    changes = storage_result[0].get("changes", [])
+                    for key_hex, value_hex in changes:
+                        if value_hex is None:
+                            continue
+                        try:
+                            key_bytes = bytes.fromhex(key_hex[2:])
+                            netuid = int.from_bytes(key_bytes[-2:], 'little')
+                            value = _decode_rpc_value(value_hex, storage_function)
+                            result[netuid] = value
+                        except Exception as e:
+                            logger.debug(f"Failed to decode key/value: {e}")
+                # Small delay between batches to avoid rate limiting
+                if i + batch_size < len(all_keys):
+                    time.sleep(0.2)
 
-        gc.collect()
+            gc.collect()
 
-    except Exception as e:
-        logger.warning(f"RPC query_map {storage_function} failed: {e}")
+            if result:
+                return result
+
+            # Got keys but no values — likely rate-limited, retry
+            if attempt < retries:
+                logger.warning(f"RPC query_map {storage_function} returned empty values, retrying ({attempt+1}/{retries})...")
+                time.sleep(3)
+
+        except Exception as e:
+            logger.warning(f"RPC query_map {storage_function} failed (attempt {attempt+1}): {e}")
+            if attempt < retries:
+                time.sleep(3)
 
     return result
 
@@ -338,12 +352,13 @@ class BittensorService:
                 ('neurons', 'SubnetworkN'),
                 ('burn', 'Burn'),
             ]:
+                time.sleep(1)  # Delay between queries to avoid RPC rate limiting
                 raw = _query_map_rpc(storage, endpoint)
                 for n in netuid_set:
                     data[n][field] = raw.get(n, 0)
                 del raw
                 gc.collect()
-                logger.info(f"Fetched {field}")
+                logger.info(f"Fetched {field} ({len([n for n in netuid_set if data[n][field] != 0])} non-zero)")
 
             # Fetch human-readable subnet names (small HTTP request)
             subnet_names = _fetch_subnet_names()
