@@ -241,22 +241,31 @@ def _query_combined_rpc(netuids: set, storage_fields: list, endpoint: str) -> di
     total = 0
     errors = 0
 
+    sorted_netuids = sorted(netuids)
     for field, storage in storage_fields:
         prefix = _KNOWN_STORAGE_KEYS.get(f"SubtensorModule.{storage}", "")
         if not prefix:
             continue
         prefix_hex = prefix[2:]  # strip 0x
+        field_errors = 0
 
-        for netuid in sorted(netuids):
+        for netuid in sorted_netuids:
             key_hex = _build_storage_key(prefix_hex, netuid)
-            value_hex = _query_single_value(key_hex, session, endpoint)
+            value_hex = None
+            for attempt in range(2):
+                value_hex = _query_single_value(key_hex, session, endpoint)
+                if value_hex and value_hex != "0x":
+                    break
+                if attempt == 0:
+                    time.sleep(0.5)
             total += 1
             if value_hex and value_hex != "0x":
                 result[field][netuid] = _decode_rpc_value(value_hex, storage)
             else:
+                field_errors += 1
                 errors += 1
 
-        logger.info(f"Fetched {field}: {len(result[field])} values")
+        logger.info(f"Fetched {field}: {len(result[field])} values, {field_errors} failures")
         gc.collect()
 
     session.close()
