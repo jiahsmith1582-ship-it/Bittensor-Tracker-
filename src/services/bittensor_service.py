@@ -213,6 +213,61 @@ def _query_map_rpc(storage_function: str, endpoint: str = None, retries: int = 2
     return result
 
 
+def _build_storage_key(prefix: str, netuid: int) -> str:
+    """Build a full storage key for a u16 netuid."""
+    return prefix + netuid.to_bytes(2, 'little').hex()
+
+
+def _query_combined_rpc(netuids: set, storage_fields: list, endpoint: str) -> dict:
+    """Query multiple storage functions for known netuids in minimal RPC calls.
+
+    Instead of scanning keys for each storage function separately, we construct
+    the exact keys from known netuids and query all values in one batch.
+    Returns {field_name: {netuid: value}}.
+    """
+    result = {field: {} for field, _ in storage_fields}
+
+    # Build all keys: for each storage function, one key per netuid
+    all_keys = []
+    key_map = {}  # key_hex -> (field, netuid, storage_function)
+    for field, storage in storage_fields:
+        prefix = _KNOWN_STORAGE_KEYS.get(f"SubtensorModule.{storage}", "")
+        if not prefix:
+            continue
+        for netuid in netuids:
+            key_hex = "0x" + _build_storage_key(prefix[2:], netuid)
+            all_keys.append(key_hex)
+            key_map[key_hex] = (field, netuid, storage)
+
+    logger.info(f"Querying {len(all_keys)} storage values in batches...")
+
+    # Query in batches of 200 (all in one go if possible)
+    batch_size = 200
+    for i in range(0, len(all_keys), batch_size):
+        batch_keys = all_keys[i:i + batch_size]
+        for attempt in range(3):
+            storage_result = _rpc_request("state_queryStorageAt", [batch_keys], endpoint)
+            if storage_result and isinstance(storage_result, list) and len(storage_result) > 0:
+                changes = storage_result[0].get("changes", [])
+                for key_hex, value_hex in changes:
+                    if value_hex is None:
+                        continue
+                    mapping = key_map.get(key_hex)
+                    if mapping:
+                        field, netuid, storage = mapping
+                        result[field][netuid] = _decode_rpc_value(value_hex, storage)
+                break
+            else:
+                logger.warning(f"Combined batch {i//batch_size} empty (attempt {attempt+1}/3)")
+                time.sleep(2)
+
+        if i + batch_size < len(all_keys):
+            time.sleep(0.5)
+
+    gc.collect()
+    return result
+
+
 def _decode_rpc_value(hex_value: str, storage_function: str):
     """Decode a hex-encoded storage value based on the storage type."""
     if not hex_value or hex_value == "0x":
@@ -343,22 +398,25 @@ class BittensorService:
             del emissions
             gc.collect()
 
-            # Step 3: Fetch remaining fields one at a time
-            for field, storage in [
+            # Step 3: Fetch all remaining fields in one combined batch
+            # Build keys for all storage functions and all netuids at once
+            storage_fields = [
                 ('price', 'SubnetMovingPrice'),
                 ('tao_r', 'SubnetTAO'),
                 ('alpha_r', 'SubnetAlphaIn'),
                 ('tempo', 'Tempo'),
                 ('neurons', 'SubnetworkN'),
                 ('burn', 'Burn'),
-            ]:
-                time.sleep(1)  # Delay between queries to avoid RPC rate limiting
-                raw = _query_map_rpc(storage, endpoint)
-                for n in netuid_set:
-                    data[n][field] = raw.get(n, 0)
-                del raw
-                gc.collect()
-                logger.info(f"Fetched {field} ({len([n for n in netuid_set if data[n][field] != 0])} non-zero)")
+            ]
+            combined = _query_combined_rpc(netuid_set, storage_fields, endpoint)
+            for n in netuid_set:
+                for field, _ in storage_fields:
+                    data[n][field] = combined.get(field, {}).get(n, 0)
+            del combined
+            gc.collect()
+            for field, _ in storage_fields:
+                non_zero = len([n for n in netuid_set if data[n][field] != 0])
+                logger.info(f"Fetched {field} ({non_zero} non-zero)")
 
             # Fetch human-readable subnet names (small HTTP request)
             subnet_names = _fetch_subnet_names()
