@@ -213,58 +213,54 @@ def _query_map_rpc(storage_function: str, endpoint: str = None, retries: int = 2
     return result
 
 
-def _build_storage_key(prefix: str, netuid: int) -> str:
-    """Build a full storage key for a u16 netuid."""
-    return prefix + netuid.to_bytes(2, 'little').hex()
+def _build_storage_key(prefix_hex: str, netuid: int) -> str:
+    """Build a full storage key (with 0x) for a u16 netuid."""
+    return "0x" + prefix_hex + netuid.to_bytes(2, 'little').hex()
+
+
+def _query_single_value(key_hex: str, session: requests.Session, endpoint: str) -> Optional[str]:
+    """Query a single storage value using state_getStorage."""
+    payload = {"jsonrpc": "2.0", "id": 1, "method": "state_getStorage", "params": [key_hex]}
+    try:
+        resp = session.post(endpoint, json=payload, timeout=15)
+        data = resp.json()
+        return data.get("result")
+    except Exception:
+        return None
 
 
 def _query_combined_rpc(netuids: set, storage_fields: list, endpoint: str) -> dict:
-    """Query multiple storage functions for known netuids in minimal RPC calls.
+    """Query multiple storage functions for known netuids using individual calls.
 
-    Instead of scanning keys for each storage function separately, we construct
-    the exact keys from known netuids and query all values in one batch.
+    Uses state_getStorage per key with a persistent HTTP session for connection
+    reuse. Each call is tiny (~200 bytes response), keeping memory low.
     Returns {field_name: {netuid: value}}.
     """
     result = {field: {} for field, _ in storage_fields}
+    session = requests.Session()
+    total = 0
+    errors = 0
 
-    # Build all keys: for each storage function, one key per netuid
-    all_keys = []
-    key_map = {}  # key_hex -> (field, netuid, storage_function)
     for field, storage in storage_fields:
         prefix = _KNOWN_STORAGE_KEYS.get(f"SubtensorModule.{storage}", "")
         if not prefix:
             continue
-        for netuid in netuids:
-            key_hex = "0x" + _build_storage_key(prefix[2:], netuid)
-            all_keys.append(key_hex)
-            key_map[key_hex] = (field, netuid, storage)
+        prefix_hex = prefix[2:]  # strip 0x
 
-    logger.info(f"Querying {len(all_keys)} storage values in batches...")
-
-    # Query in batches of 200 (all in one go if possible)
-    batch_size = 200
-    for i in range(0, len(all_keys), batch_size):
-        batch_keys = all_keys[i:i + batch_size]
-        for attempt in range(3):
-            storage_result = _rpc_request("state_queryStorageAt", [batch_keys], endpoint)
-            if storage_result and isinstance(storage_result, list) and len(storage_result) > 0:
-                changes = storage_result[0].get("changes", [])
-                for key_hex, value_hex in changes:
-                    if value_hex is None:
-                        continue
-                    mapping = key_map.get(key_hex)
-                    if mapping:
-                        field, netuid, storage = mapping
-                        result[field][netuid] = _decode_rpc_value(value_hex, storage)
-                break
+        for netuid in sorted(netuids):
+            key_hex = _build_storage_key(prefix_hex, netuid)
+            value_hex = _query_single_value(key_hex, session, endpoint)
+            total += 1
+            if value_hex and value_hex != "0x":
+                result[field][netuid] = _decode_rpc_value(value_hex, storage)
             else:
-                logger.warning(f"Combined batch {i//batch_size} empty (attempt {attempt+1}/3)")
-                time.sleep(2)
+                errors += 1
 
-        if i + batch_size < len(all_keys):
-            time.sleep(0.5)
+        logger.info(f"Fetched {field}: {len(result[field])} values")
+        gc.collect()
 
-    gc.collect()
+    session.close()
+    logger.info(f"Combined query done: {total} calls, {errors} empty/failed")
     return result
 
 
@@ -358,7 +354,7 @@ class BittensorService:
 
         # If another fetch is running, return cache (with 30 min timeout to auto-reset)
         if self._is_fetching:
-            if self._fetch_started and (datetime.now() - self._fetch_started).total_seconds() > 1800:
+            if self._fetch_started and (datetime.now() - self._fetch_started).total_seconds() > 300:
                 logger.warning("Fetch seems stuck (>30 min), resetting flag")
                 self._is_fetching = False
             else:
