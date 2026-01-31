@@ -218,58 +218,64 @@ def _build_storage_key(prefix_hex: str, netuid: int) -> str:
     return "0x" + prefix_hex + netuid.to_bytes(2, 'little').hex()
 
 
-def _query_single_value(key_hex: str, session: requests.Session, endpoint: str) -> Optional[str]:
-    """Query a single storage value using state_getStorage."""
-    payload = {"jsonrpc": "2.0", "id": 1, "method": "state_getStorage", "params": [key_hex]}
-    try:
-        resp = session.post(endpoint, json=payload, timeout=15)
-        data = resp.json()
-        return data.get("result")
-    except Exception:
-        return None
-
-
 def _query_combined_rpc(netuids: set, storage_fields: list, endpoint: str) -> dict:
-    """Query multiple storage functions for known netuids using individual calls.
+    """Query multiple storage functions for known netuids using batch RPC.
 
-    Uses state_getStorage per key with a persistent HTTP session for connection
-    reuse. Each call is tiny (~200 bytes response), keeping memory low.
+    Constructs exact storage keys from known netuids and queries values using
+    state_queryStorageAt in small batches (30 keys each). This keeps both
+    the number of HTTP calls (~5 per field) and response size small.
     Returns {field_name: {netuid: value}}.
     """
     result = {field: {} for field, _ in storage_fields}
-    session = requests.Session()
-    total = 0
-    errors = 0
 
-    sorted_netuids = sorted(netuids)
     for field, storage in storage_fields:
         prefix = _KNOWN_STORAGE_KEYS.get(f"SubtensorModule.{storage}", "")
         if not prefix:
             continue
-        prefix_hex = prefix[2:]  # strip 0x
-        field_errors = 0
+        prefix_hex = prefix[2:]
 
-        for netuid in sorted_netuids:
+        # Build keys for all netuids
+        keys_with_netuid = []
+        for netuid in sorted(netuids):
             key_hex = _build_storage_key(prefix_hex, netuid)
-            value_hex = None
-            for attempt in range(2):
-                value_hex = _query_single_value(key_hex, session, endpoint)
-                if value_hex and value_hex != "0x":
-                    break
-                if attempt == 0:
-                    time.sleep(0.5)
-            total += 1
-            if value_hex and value_hex != "0x":
-                result[field][netuid] = _decode_rpc_value(value_hex, storage)
-            else:
-                field_errors += 1
-                errors += 1
+            keys_with_netuid.append((key_hex, netuid))
 
-        logger.info(f"Fetched {field}: {len(result[field])} values, {field_errors} failures")
+        # Query in small batches of 30
+        for i in range(0, len(keys_with_netuid), 30):
+            batch = keys_with_netuid[i:i + 30]
+            batch_keys = [k for k, _ in batch]
+
+            for attempt in range(3):
+                try:
+                    payload = {
+                        "jsonrpc": "2.0", "id": 1,
+                        "method": "state_queryStorageAt",
+                        "params": [batch_keys]
+                    }
+                    resp = requests.post(endpoint, json=payload, timeout=30)
+                    data = resp.json()
+                    if "error" in data:
+                        logger.warning(f"RPC error {storage}: {data['error']}")
+                        time.sleep(2)
+                        continue
+                    sr = data.get("result")
+                    if sr and isinstance(sr, list) and len(sr) > 0:
+                        changes = {k: v for k, v in sr[0].get("changes", []) if v}
+                        for key_hex, netuid in batch:
+                            val = changes.get(key_hex)
+                            if val:
+                                result[field][netuid] = _decode_rpc_value(val, storage)
+                        break
+                except Exception as e:
+                    logger.warning(f"Batch {storage}[{i}] failed: {e}")
+                time.sleep(2)
+
+            time.sleep(0.5)
+
+        logger.info(f"Fetched {field}: {len(result[field])} non-zero")
         gc.collect()
+        time.sleep(1)
 
-    session.close()
-    logger.info(f"Combined query done: {total} calls, {errors} empty/failed")
     return result
 
 
