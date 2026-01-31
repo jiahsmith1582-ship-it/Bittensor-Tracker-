@@ -357,7 +357,8 @@ class BittensorService:
                     raw_price = d['price']
 
                     tao_in = _rao_to_tao(d['tao_r'])
-                    name = subnet_names.get(netuid, f"Subnet {netuid}")
+                    raw_name = subnet_names.get(netuid, f"Subnet {netuid}")
+                    name = raw_name.get("name", str(raw_name)) if isinstance(raw_name, dict) else str(raw_name)
 
                     subnets.append(SubnetInfo(
                         netuid=netuid,

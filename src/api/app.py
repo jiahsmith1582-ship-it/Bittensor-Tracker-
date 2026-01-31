@@ -54,14 +54,12 @@ def create_app(config: dict = None) -> Flask:
             'version': '1.0.0',
             'endpoints': {
                 'health': '/api/v1/health',
-                'tao_price': '/api/v1/tao/price',
                 'all_subnets': '/api/v1/subnets',
                 'subnet_by_id': '/api/v1/subnets/<netuid>',
                 'subnet_emissions': '/api/v1/subnets/emissions',
                 'wallet_portfolio': '/api/v1/wallet/<address>/portfolio',
                 'wallet_stakes': '/api/v1/wallet/<address>/stakes',
                 'sheets_subnets': '/api/v1/sheets/subnets',
-                'sheets_price': '/api/v1/sheets/price',
                 'sheets_portfolio': '/api/v1/sheets/portfolio?address=<SS58>',
                 'sheets_stakes': '/api/v1/sheets/stakes?address=<SS58>',
                 'current_block': '/api/v1/block'
@@ -103,7 +101,6 @@ def _start_background_refresh():
         from apscheduler.schedulers.background import BackgroundScheduler
         from ..config import config
         from ..services.bittensor_service import get_bittensor_service
-        from ..services.price_service import get_price_service
 
         scheduler = BackgroundScheduler()
 
@@ -118,30 +115,16 @@ def _start_background_refresh():
             except Exception as e:
                 logger.error(f"Background refresh failed: {e}")
 
-        def refresh_price():
-            try:
-                service = get_price_service()
-                price = service.get_tao_price(use_cache=False)
-                if price:
-                    logger.info(f"Background refresh: TAO price ${price.price_usd:.2f}")
-            except Exception as e:
-                logger.error(f"Background price refresh failed: {e}")
-
         scheduler.add_job(refresh_subnets, 'interval',
                           seconds=config.REFRESH_INTERVAL,
                           id='refresh_subnets', replace_existing=True)
-        scheduler.add_job(refresh_price, 'interval',
-                          seconds=config.PRICE_CACHE_TTL,
-                          id='refresh_price', replace_existing=True)
 
         scheduler.start()
         atexit.register(lambda: scheduler.shutdown(wait=False))
 
-        logger.info(f"Background refresh started (subnets every {config.REFRESH_INTERVAL}s, "
-                     f"price every {config.PRICE_CACHE_TTL}s)")
+        logger.info(f"Background refresh started (subnets every {config.REFRESH_INTERVAL}s)")
 
-        # Fetch price immediately, subnets in background thread
-        refresh_price()
+        # Fetch subnets in background thread
         threading.Thread(target=refresh_subnets, daemon=True).start()
 
     except ImportError:

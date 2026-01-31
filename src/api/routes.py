@@ -11,7 +11,6 @@ import csv
 import io
 
 from ..services.bittensor_service import get_bittensor_service
-from ..services.price_service import get_price_service
 from ..services.wallet_service import get_wallet_service
 
 logger = logging.getLogger(__name__)
@@ -31,21 +30,6 @@ def health_check():
         'service': 'bittensor-tracker'
     })
 
-
-# ---------------------------------------------------------------------------
-# TAO Price
-# ---------------------------------------------------------------------------
-
-@api.route('/tao/price', methods=['GET'])
-def get_tao_price():
-    """Get current TAO price."""
-    price_service = get_price_service()
-    price = price_service.get_tao_price()
-
-    if not price:
-        return jsonify({'error': 'Price temporarily unavailable - CoinGecko rate limited'}), 503
-
-    return jsonify(price_service.to_dict(price))
 
 
 # ---------------------------------------------------------------------------
@@ -176,34 +160,6 @@ def sheets_subnets():
     return _to_csv_response(data)
 
 
-@api.route('/sheets/price', methods=['GET'])
-def sheets_price():
-    """
-    Google Sheets optimized CSV for TAO price.
-
-    Usage in Google Sheets:
-        =IMPORTDATA("http://your-server:5000/api/v1/sheets/price")
-    """
-    price_service = get_price_service()
-    price = price_service.get_tao_price()
-
-    if not price:
-        return Response("price_usd,change_24h_pct,timestamp\n0,0,error\n", mimetype='text/csv')
-
-    output = io.StringIO()
-    writer = csv.writer(output)
-    writer.writerow(['price_usd', 'price_aud', 'change_24h_pct', 'market_cap', 'volume_24h', 'timestamp'])
-    writer.writerow([
-        price.price_usd,
-        price.price_aud or 0,
-        round(price.change_24h_percent or 0, 2),
-        price.market_cap_usd or 0,
-        price.volume_24h_usd or 0,
-        price.timestamp
-    ])
-
-    return Response(output.getvalue(), mimetype='text/csv')
-
 
 @api.route('/sheets/portfolio', methods=['GET'])
 def sheets_portfolio():
@@ -229,20 +185,16 @@ def sheets_portfolio():
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow([
-        'coldkey', 'free_balance_tao', 'free_balance_usd',
-        'total_staked_tao', 'total_alpha_value_tao',
-        'total_portfolio_tao', 'total_portfolio_usd',
-        'tao_price_usd', 'timestamp'
+        'coldkey', 'free_balance_tao',
+        'total_staked_tao',
+        'total_portfolio_tao',
+        'timestamp'
     ])
     writer.writerow([
         portfolio.coldkey,
         portfolio.free_balance_tao,
-        portfolio.free_balance_usd,
         portfolio.total_staked_tao,
-        portfolio.total_alpha_value_tao,
         portfolio.total_portfolio_tao,
-        portfolio.total_portfolio_usd,
-        portfolio.tao_price_usd,
         portfolio.timestamp
     ])
 
@@ -272,7 +224,7 @@ def sheets_stakes():
 
     if not portfolio.subnet_stakes:
         return Response(
-            "netuid,subnet_name,symbol,hotkey,tao_staked,alpha_held,alpha_price,alpha_value_tao,alpha_value_usd\n",
+            "netuid,subnet_name,symbol,hotkey,alpha_held,alpha_value_tao\n",
             mimetype='text/csv'
         )
 

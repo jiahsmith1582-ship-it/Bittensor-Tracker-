@@ -7,7 +7,6 @@ Use this to verify your bittensor installation is working.
 Usage:
     python fetch_subnets.py           # Fetch all subnets
     python fetch_subnets.py --netuid 1 # Fetch specific subnet
-    python fetch_subnets.py --price   # Fetch TAO price only
     python fetch_subnets.py --wallet 5Cai... # Fetch wallet portfolio
 """
 
@@ -60,27 +59,6 @@ def fetch_subnets(netuid: int = None):
         print("-" * 110)
 
 
-def fetch_price():
-    """Fetch TAO price."""
-    from src.services.price_service import get_price_service
-
-    print("\nFetching TAO price...")
-    service = get_price_service()
-    price = service.get_tao_price()
-
-    if price:
-        print(f"\nTAO Price: ${price.price_usd:.2f} USD")
-        if price.change_24h_percent:
-            print(f"24h Change: {price.change_24h_percent:.2f}%")
-        if price.market_cap_usd:
-            print(f"Market Cap: ${price.market_cap_usd:,.0f}")
-        if price.volume_24h_usd:
-            print(f"24h Volume: ${price.volume_24h_usd:,.0f}")
-        print(f"Source: {price.source}")
-        print(f"Timestamp: {price.timestamp}")
-    else:
-        print("Failed to fetch TAO price")
-
 
 def fetch_wallet(address: str):
     """Fetch wallet portfolio data."""
@@ -124,20 +102,13 @@ def fetch_wallet(address: str):
 def main():
     parser = argparse.ArgumentParser(description='Fetch Bittensor subnet data')
     parser.add_argument('--netuid', type=int, help='Fetch specific subnet by netuid')
-    parser.add_argument('--price', action='store_true', help='Fetch TAO price only')
     parser.add_argument('--wallet', type=str, help='Fetch wallet portfolio (provide SS58 coldkey address)')
-    parser.add_argument('--all', action='store_true', help='Fetch all data (subnets + price)')
 
     args = parser.parse_args()
 
     try:
         if args.wallet:
             fetch_wallet(args.wallet)
-        elif args.price:
-            fetch_price()
-        elif args.all:
-            fetch_price()
-            fetch_subnets()
         else:
             fetch_subnets(args.netuid)
     except ImportError as e:

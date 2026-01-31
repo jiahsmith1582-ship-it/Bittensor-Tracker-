@@ -53,34 +53,17 @@ def start_background_refresh():
             except Exception as e:
                 logger.error(f"Background refresh failed: {e}")
 
-        def refresh_price():
-            """Background job to refresh TAO price cache."""
-            try:
-                from src.services.price_service import get_price_service
-                service = get_price_service()
-                price = service.get_tao_price(use_cache=False)
-                if price:
-                    logger.info(f"Background refresh: TAO price ${price.price_usd:.2f}")
-            except Exception as e:
-                logger.error(f"Background price refresh failed: {e}")
-
         # Refresh subnets every REFRESH_INTERVAL seconds
         scheduler.add_job(refresh_subnets, 'interval', seconds=config.REFRESH_INTERVAL,
                           id='refresh_subnets', replace_existing=True)
 
-        # Refresh price every PRICE_CACHE_TTL seconds
-        scheduler.add_job(refresh_price, 'interval', seconds=config.PRICE_CACHE_TTL,
-                          id='refresh_price', replace_existing=True)
-
         scheduler.start()
-        logger.info(f"Background refresh started (subnets every {config.REFRESH_INTERVAL}s, "
-                     f"price every {config.PRICE_CACHE_TTL}s)")
+        logger.info(f"Background refresh started (subnets every {config.REFRESH_INTERVAL}s)")
 
         # Shut down scheduler on exit
         atexit.register(lambda: scheduler.shutdown(wait=False))
 
-        # Fetch price immediately (fast), but run subnet fetch in background thread
-        refresh_price()
+        # Run subnet fetch in background thread
         import threading
         threading.Thread(target=refresh_subnets, daemon=True).start()
         logger.info("Initial subnet fetch started in background thread")
@@ -105,10 +88,8 @@ def main():
     print(f"Network: {config.BITTENSOR_NETWORK}")
     print("\nEndpoints:")
     print(f"  - Health:          http://localhost:{config.PORT}/api/v1/health")
-    print(f"  - TAO Price:       http://localhost:{config.PORT}/api/v1/tao/price")
     print(f"  - Subnets:         http://localhost:{config.PORT}/api/v1/subnets")
     print(f"  - Sheets Subnets:  http://localhost:{config.PORT}/api/v1/sheets/subnets")
-    print(f"  - Sheets Price:    http://localhost:{config.PORT}/api/v1/sheets/price")
     print(f"  - Sheets Portfolio:http://localhost:{config.PORT}/api/v1/sheets/portfolio?address=<SS58>")
     print(f"  - Sheets Stakes:   http://localhost:{config.PORT}/api/v1/sheets/stakes?address=<SS58>")
     print(f"  - Wallet Portfolio:http://localhost:{config.PORT}/api/v1/wallet/<address>/portfolio")

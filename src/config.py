@@ -31,6 +31,9 @@ class Config:
     PRICE_CACHE_TTL = int(os.getenv('PRICE_CACHE_TTL', 30))      # 30 seconds
     WALLET_CACHE_TTL = int(os.getenv('WALLET_CACHE_TTL', 120))   # 2 minutes
 
+    # Taostats API
+    TAOSTATS_API_KEY = os.getenv('TAOSTATS_API_KEY', '')
+
     # Background refresh interval (seconds)
     REFRESH_INTERVAL = int(os.getenv('REFRESH_INTERVAL', 300))    # 5 minutes
 
