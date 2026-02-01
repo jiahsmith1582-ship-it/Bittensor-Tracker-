@@ -301,7 +301,7 @@ def sheets_transfers():
     wallet_service = get_wallet_service()
     transfers = wallet_service.get_transfers(address, limit=limit)
     if not transfers:
-        return Response("block,timestamp,from,to,amount_tao,fee_tao,extrinsic_id\n", mimetype='text/csv')
+        return Response("block,timestamp,direction,from,to,amount_tao,fee_tao,extrinsic_id\n", mimetype='text/csv')
     return _to_csv_response(transfers)
 
 
@@ -315,7 +315,7 @@ def sheets_delegations():
     wallet_service = get_wallet_service()
     delegations = wallet_service.get_delegations(address, limit=limit)
     if not delegations:
-        return Response("block,timestamp,action,netuid,delegate_name,delegate,amount_tao,alpha,alpha_price_tao,extrinsic_id\n", mimetype='text/csv')
+        return Response("block,timestamp,action,netuid,subnet_name,delegate_name,delegate,amount_tao,alpha,alpha_price_tao,extrinsic_id\n", mimetype='text/csv')
     return _to_csv_response(delegations)
 
 

@@ -141,11 +141,20 @@ class WalletService:
             resp.raise_for_status()
             rows = []
             for t in resp.json().get("data", []):
+                from_addr = t.get("from", {}).get("ss58", "")
+                to_addr = t.get("to", {}).get("ss58", "")
+                if to_addr == coldkey_ss58:
+                    direction = "Receive"
+                elif from_addr == coldkey_ss58:
+                    direction = "Send"
+                else:
+                    direction = "Unknown"
                 rows.append({
                     "block": t.get("block_number", 0),
                     "timestamp": t.get("timestamp", ""),
-                    "from": t.get("from", {}).get("ss58", ""),
-                    "to": t.get("to", {}).get("ss58", ""),
+                    "direction": direction,
+                    "from": from_addr,
+                    "to": to_addr,
                     "amount_tao": round(_rao_to_tao(t.get("amount", 0)), 6),
                     "fee_tao": round(_rao_to_tao(t.get("fee", 0)), 9),
                     "extrinsic_id": t.get("extrinsic_id", ""),
@@ -168,13 +177,23 @@ class WalletService:
                 timeout=15
             )
             resp.raise_for_status()
+            bt_service = get_bittensor_service()
             rows = []
             for d in resp.json().get("data", []):
+                netuid = d.get("netuid", 0)
+                subnet_info = bt_service.get_subnet(netuid)
+                subnet_name = ""
+                if subnet_info:
+                    raw_name = subnet_info.name
+                    subnet_name = raw_name.get("name", str(raw_name)) if isinstance(raw_name, dict) else str(raw_name)
+                else:
+                    subnet_name = f"Subnet {netuid}"
                 rows.append({
                     "block": d.get("block_number", 0),
                     "timestamp": d.get("timestamp", ""),
                     "action": d.get("action", ""),
-                    "netuid": d.get("netuid", 0),
+                    "netuid": netuid,
+                    "subnet_name": subnet_name,
                     "delegate_name": d.get("delegate_name", ""),
                     "delegate": d.get("delegate", {}).get("ss58", ""),
                     "amount_tao": round(_rao_to_tao(d.get("amount", 0)), 6),
