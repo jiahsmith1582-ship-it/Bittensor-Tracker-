@@ -193,12 +193,14 @@ class WalletService:
                     action = "Buy"
                 elif action == "UNDELEGATE":
                     action = "Sell"
+                symbol = subnet_info.symbol if subnet_info else f"SN{netuid}"
                 rows.append({
                     "block": d.get("block_number", 0),
                     "timestamp": d.get("timestamp", ""),
                     "action": action,
                     "netuid": netuid,
                     "subnet_name": subnet_name,
+                    "symbol": symbol,
                     "delegate_name": d.get("delegate_name", ""),
                     "delegate": d.get("delegate", {}).get("ss58", ""),
                     "amount_tao": round(_rao_to_tao(d.get("amount", 0)), 6),
@@ -272,12 +274,14 @@ class WalletService:
                             action = "Buy"
                         elif action == "UNDELEGATE":
                             action = "Sell"
+                        symbol = subnet_info.symbol if subnet_info else f"SN{netuid}"
                         all_rows.append({
                             "whale": short_whale,
                             "timestamp": d.get("timestamp", ""),
                             "action": action,
                             "netuid": netuid,
                             "subnet_name": subnet_name,
+                            "symbol": symbol,
                             "delegate_name": d.get("delegate_name", ""),
                             "amount_tao": round(_rao_to_tao(d.get("amount", 0)), 6),
                             "alpha": round(_rao_to_tao(d.get("alpha", 0)), 6),

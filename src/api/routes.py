@@ -315,7 +315,7 @@ def sheets_delegations():
     wallet_service = get_wallet_service()
     delegations = wallet_service.get_delegations(address, limit=limit)
     if not delegations:
-        return Response("block,timestamp,action,netuid,subnet_name,delegate_name,delegate,amount_tao,alpha,alpha_price_tao,extrinsic_id\n", mimetype='text/csv')
+        return Response("block,timestamp,action,netuid,subnet_name,symbol,delegate_name,delegate,amount_tao,alpha,alpha_price_tao,extrinsic_id\n", mimetype='text/csv')
     return _to_csv_response(delegations)
 
 
@@ -326,7 +326,7 @@ def sheets_whales():
     wallet_service = get_wallet_service()
     rows = wallet_service.get_whale_transactions(limit_per_whale=limit)
     if not rows:
-        return Response("whale,timestamp,action,netuid,subnet_name,delegate_name,amount_tao,alpha,alpha_price_tao\n", mimetype='text/csv')
+        return Response("whale,timestamp,action,netuid,subnet_name,symbol,delegate_name,amount_tao,alpha,alpha_price_tao\n", mimetype='text/csv')
     return _to_csv_response(rows)
 
 
