@@ -173,7 +173,7 @@ class WalletService:
             resp = requests.get(
                 f"{TAOSTATS_BASE}/delegation/v1",
                 headers={"Authorization": api_key},
-                params={"address": coldkey_ss58, "limit": limit},
+                params={"nominator": coldkey_ss58, "limit": limit},
                 timeout=15
             )
             resp.raise_for_status()
@@ -188,10 +188,15 @@ class WalletService:
                     subnet_name = raw_name.get("name", str(raw_name)) if isinstance(raw_name, dict) else str(raw_name)
                 else:
                     subnet_name = f"Subnet {netuid}"
+                action = d.get("action", "")
+                if action == "DELEGATE":
+                    action = "Buy"
+                elif action == "UNDELEGATE":
+                    action = "Sell"
                 rows.append({
                     "block": d.get("block_number", 0),
                     "timestamp": d.get("timestamp", ""),
-                    "action": d.get("action", ""),
+                    "action": action,
                     "netuid": netuid,
                     "subnet_name": subnet_name,
                     "delegate_name": d.get("delegate_name", ""),
