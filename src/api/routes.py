@@ -319,6 +319,17 @@ def sheets_delegations():
     return _to_csv_response(delegations)
 
 
+@api.route('/sheets/whales', methods=['GET'])
+def sheets_whales():
+    """Google Sheets CSV for top whale delegation transactions."""
+    limit = request.args.get('limit', 10, type=int)
+    wallet_service = get_wallet_service()
+    rows = wallet_service.get_whale_transactions(limit_per_whale=limit)
+    if not rows:
+        return Response("whale,timestamp,action,netuid,subnet_name,delegate_name,amount_tao,alpha,alpha_price_tao\n", mimetype='text/csv')
+    return _to_csv_response(rows)
+
+
 # ---------------------------------------------------------------------------
 # Block Info
 # ---------------------------------------------------------------------------

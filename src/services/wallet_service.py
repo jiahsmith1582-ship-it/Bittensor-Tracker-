@@ -215,6 +215,88 @@ class WalletService:
         return asdict(portfolio)
 
 
+    def get_whale_transactions(self, limit_per_whale: int = 10) -> list[dict]:
+        """Get recent delegation transactions from top whale wallets."""
+        import time
+
+        WHALE_ADDRESSES = [
+            "5Hd2ze5ug8n1bo3UCAcQsf66VNjKqGos8u6apNfzcU86pg4N",
+            "5GH2aUTMRUh1RprCgH4x3tRyCaKeUi5BfmYCfs1NARA8R54n",
+            "5GaTCa1ZEBTjfiSq9965mvaDkc8YgWnsHzrdVXMmmzWDy3iJ",
+            "5Gs1zPdtVKJ9dh1DdTRYrNPbxnkBmLCBPQ5FVMjn7mV1kUNA",
+            "5HbUBhvvCVsYYA1ghsHrVzSzARxhkF5yLFMctVgcENXjJ329",
+            "5HiveMEoWPmQmBAb8v63bKPcFhgTGCmST1TVZNvPHSTKFLCv",
+            "5FqBL928choLPmeFz5UVAvonBD5k7K2mZSXVC9RkFzLxoy2s",
+            "5HeWF2M4hHtsjeaKemfVUi427sM6caTGyqZo5XvCQLE8r7qc",
+            "5FRqwexkxqXLg4frDhGKM6rCw2y32JWojQ6JV6zBgzhnhq7r",
+            "5ELWnR5A7DUmmqHsYPA3iZMFu1BX3gceruEqFPtsmTkCqR7J",
+        ]
+
+        # Check cache
+        cache_key = "_whales_"
+        if cache_key in self._cache_timestamps:
+            age = (datetime.now() - self._cache_timestamps[cache_key]).total_seconds()
+            if age < 600 and cache_key in self._cache:
+                return self._cache[cache_key]
+
+        try:
+            api_key = config.TAOSTATS_API_KEY
+            if not api_key:
+                return []
+
+            bt_service = get_bittensor_service()
+            all_rows = []
+
+            for whale in WHALE_ADDRESSES:
+                try:
+                    resp = requests.get(
+                        f"{TAOSTATS_BASE}/delegation/v1",
+                        headers={"Authorization": api_key},
+                        params={"nominator": whale, "limit": limit_per_whale},
+                        timeout=15,
+                    )
+                    resp.raise_for_status()
+                    short_whale = whale[:8] + "..." + whale[-6:]
+
+                    for d in resp.json().get("data", []):
+                        netuid = d.get("netuid", 0)
+                        subnet_info = bt_service.get_subnet(netuid)
+                        subnet_name = ""
+                        if subnet_info:
+                            raw_name = subnet_info.name
+                            subnet_name = raw_name.get("name", str(raw_name)) if isinstance(raw_name, dict) else str(raw_name)
+                        else:
+                            subnet_name = f"Subnet {netuid}"
+                        action = d.get("action", "")
+                        if action == "DELEGATE":
+                            action = "Buy"
+                        elif action == "UNDELEGATE":
+                            action = "Sell"
+                        all_rows.append({
+                            "whale": short_whale,
+                            "timestamp": d.get("timestamp", ""),
+                            "action": action,
+                            "netuid": netuid,
+                            "subnet_name": subnet_name,
+                            "delegate_name": d.get("delegate_name", ""),
+                            "amount_tao": round(_rao_to_tao(d.get("amount", 0)), 6),
+                            "alpha": round(_rao_to_tao(d.get("alpha", 0)), 6),
+                            "alpha_price_tao": d.get("alpha_price_in_tao", "0"),
+                        })
+                    time.sleep(1)
+                except Exception as e:
+                    logger.warning(f"Failed to fetch whale {whale[:12]}...: {e}")
+                    continue
+
+            self._cache[cache_key] = all_rows
+            self._cache_timestamps[cache_key] = datetime.now()
+            return all_rows
+
+        except Exception as e:
+            logger.error(f"Failed to get whale transactions: {e}")
+            return []
+
+
 _wallet_service: Optional[WalletService] = None
 
 
