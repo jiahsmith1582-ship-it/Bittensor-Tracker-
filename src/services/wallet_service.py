@@ -164,7 +164,7 @@ class WalletService:
             logger.error(f"Failed to get transfers: {e}")
             return []
 
-    def get_delegations(self, coldkey_ss58: str, limit: int = 50) -> list[dict]:
+    def get_delegations(self, coldkey_ss58: str, limit: int = 1000) -> list[dict]:
         """Get recent delegation (stake/unstake) events for a coldkey."""
         try:
             api_key = config.TAOSTATS_API_KEY
