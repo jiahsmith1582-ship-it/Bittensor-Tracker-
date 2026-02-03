@@ -179,20 +179,32 @@ class WalletService:
             page_size = 200
 
             while True:
-                try:
-                    resp = requests.get(
-                        f"{TAOSTATS_BASE}/delegation/v1",
-                        headers={"Authorization": api_key},
-                        params={"nominator": coldkey_ss58, "limit": page_size, "page": page},
-                        timeout=30
-                    )
-                    resp.raise_for_status()
-                    data = resp.json().get("data", [])
-                except Exception as page_err:
-                    logger.error(f"Failed to fetch page {page}: {page_err}")
+                # Retry loop for rate limiting
+                data = None
+                for attempt in range(5):
+                    try:
+                        resp = requests.get(
+                            f"{TAOSTATS_BASE}/delegation/v1",
+                            headers={"Authorization": api_key},
+                            params={"nominator": coldkey_ss58, "limit": page_size, "page": page},
+                            timeout=60
+                        )
+                        if resp.status_code == 429:
+                            logger.warning(f"Rate limited on page {page}, waiting 5s (attempt {attempt + 1})")
+                            time.sleep(5)
+                            continue
+                        resp.raise_for_status()
+                        data = resp.json().get("data", [])
+                        break
+                    except Exception as page_err:
+                        logger.error(f"Failed to fetch page {page}: {page_err}")
+                        time.sleep(2)
+
+                if data is None:
+                    logger.error(f"Giving up on page {page} after 5 attempts")
                     break
 
-                time.sleep(1)  # Rate limit delay
+                time.sleep(1)  # Rate limit delay between pages
 
                 if not data:
                     break
