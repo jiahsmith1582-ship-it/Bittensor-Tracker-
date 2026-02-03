@@ -169,6 +169,7 @@ class WalletService:
         try:
             api_key = config.TAOSTATS_API_KEY
             if not api_key:
+                logger.error("No TAOSTATS_API_KEY configured")
                 return []
 
             bt_service = get_bittensor_service()
@@ -177,52 +178,61 @@ class WalletService:
             page_size = 200
 
             while True:
-                resp = requests.get(
-                    f"{TAOSTATS_BASE}/delegation/v1",
-                    headers={"Authorization": api_key},
-                    params={"nominator": coldkey_ss58, "limit": page_size, "page": page},
-                    timeout=30
-                )
-                resp.raise_for_status()
-                data = resp.json().get("data", [])
+                try:
+                    resp = requests.get(
+                        f"{TAOSTATS_BASE}/delegation/v1",
+                        headers={"Authorization": api_key},
+                        params={"nominator": coldkey_ss58, "limit": page_size, "page": page},
+                        timeout=30
+                    )
+                    resp.raise_for_status()
+                    data = resp.json().get("data", [])
+                except Exception as page_err:
+                    logger.error(f"Failed to fetch page {page}: {page_err}")
+                    break
 
                 if not data:
                     break
 
                 for d in data:
-                    netuid = d.get("netuid", 0)
-                    subnet_info = bt_service.get_subnet(netuid)
-                    subnet_name = ""
-                    if subnet_info:
-                        raw_name = subnet_info.name
-                        subnet_name = raw_name.get("name", str(raw_name)) if isinstance(raw_name, dict) else str(raw_name)
-                    else:
+                    try:
+                        netuid = d.get("netuid", 0)
+                        subnet_info = bt_service.get_subnet(netuid)
                         subnet_name = f"Subnet {netuid}"
-                    action = d.get("action", "")
-                    if action == "DELEGATE":
-                        action = "Buy"
-                    elif action == "UNDELEGATE":
-                        action = "Sell"
-                    symbol = subnet_info.symbol if subnet_info else f"SN{netuid}"
-                    rows.append({
-                        "block": d.get("block_number", 0),
-                        "timestamp": d.get("timestamp", ""),
-                        "action": action,
-                        "netuid": netuid,
-                        "subnet_name": subnet_name,
-                        "symbol": symbol,
-                        "delegate_name": d.get("delegate_name", ""),
-                        "delegate": d.get("delegate", {}).get("ss58", ""),
-                        "amount_tao": round(_rao_to_tao(d.get("amount", 0)), 6),
-                        "alpha": round(_rao_to_tao(d.get("alpha", 0)), 6),
-                        "alpha_price_tao": d.get("alpha_price_in_tao", "0"),
-                        "extrinsic_id": d.get("extrinsic_id", ""),
-                    })
+                        symbol = f"SN{netuid}"
+                        if subnet_info:
+                            raw_name = subnet_info.name
+                            subnet_name = raw_name.get("name", str(raw_name)) if isinstance(raw_name, dict) else str(raw_name)
+                            symbol = subnet_info.symbol
+                        action = d.get("action", "")
+                        if action == "DELEGATE":
+                            action = "Buy"
+                        elif action == "UNDELEGATE":
+                            action = "Sell"
+                        rows.append({
+                            "block": d.get("block_number", 0),
+                            "timestamp": d.get("timestamp", ""),
+                            "action": action,
+                            "netuid": netuid,
+                            "subnet_name": subnet_name,
+                            "symbol": symbol,
+                            "delegate_name": d.get("delegate_name", ""),
+                            "delegate": d.get("delegate", {}).get("ss58", ""),
+                            "amount_tao": round(_rao_to_tao(d.get("amount", 0)), 6),
+                            "alpha": round(_rao_to_tao(d.get("alpha", 0)), 6),
+                            "alpha_price_tao": d.get("alpha_price_in_tao", "0"),
+                            "extrinsic_id": d.get("extrinsic_id", ""),
+                        })
+                    except Exception as row_err:
+                        logger.warning(f"Skipping row: {row_err}")
+                        continue
 
+                logger.info(f"Fetched page {page} with {len(data)} delegations")
                 if len(data) < page_size:
                     break
                 page += 1
 
+            logger.info(f"Total delegations fetched: {len(rows)}")
             return rows
         except Exception as e:
             logger.error(f"Failed to get delegations: {e}")
