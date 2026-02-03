@@ -166,6 +166,7 @@ class WalletService:
 
     def get_delegations(self, coldkey_ss58: str) -> list[dict]:
         """Get all delegation (stake/unstake) events for a coldkey via pagination."""
+        import time
         try:
             api_key = config.TAOSTATS_API_KEY
             if not api_key:
@@ -190,6 +191,8 @@ class WalletService:
                 except Exception as page_err:
                     logger.error(f"Failed to fetch page {page}: {page_err}")
                     break
+
+                time.sleep(1)  # Rate limit delay
 
                 if not data:
                     break
