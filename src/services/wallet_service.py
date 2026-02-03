@@ -174,7 +174,7 @@ class WalletService:
             bt_service = get_bittensor_service()
             rows = []
             page = 1
-            page_size = 500
+            page_size = 200
 
             while True:
                 resp = requests.get(
