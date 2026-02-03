@@ -307,13 +307,12 @@ def sheets_transfers():
 
 @api.route('/sheets/delegations', methods=['GET'])
 def sheets_delegations():
-    """Google Sheets CSV for wallet delegation events."""
+    """Google Sheets CSV for wallet delegation events (all transactions via pagination)."""
     address = request.args.get('address', '').strip()
     if not address:
         return Response("error\nMissing 'address' query parameter\n", mimetype='text/csv')
-    limit = request.args.get('limit', 50, type=int)
     wallet_service = get_wallet_service()
-    delegations = wallet_service.get_delegations(address, limit=limit)
+    delegations = wallet_service.get_delegations(address)
     if not delegations:
         return Response("block,timestamp,action,netuid,subnet_name,symbol,delegate_name,delegate,amount_tao,alpha,alpha_price_tao,extrinsic_id\n", mimetype='text/csv')
     return _to_csv_response(delegations)
