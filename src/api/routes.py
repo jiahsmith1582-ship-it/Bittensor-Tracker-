@@ -163,16 +163,18 @@ def sheets_portfolio():
 
     Query params:
         address: SS58 coldkey address (required)
+        api_key: Taostats API key (optional, overrides server default)
 
     Usage in Google Sheets:
-        =IMPORTDATA("http://your-server:5000/api/v1/sheets/portfolio?address=5Cai...")
+        =IMPORTDATA("http://your-server:5000/api/v1/sheets/portfolio?address=5Cai...&api_key=tao-xxx")
     """
     address = request.args.get('address', '').strip()
+    api_key = request.args.get('api_key', '').strip()
     if not address:
         return Response("error\nMissing 'address' query parameter\n", mimetype='text/csv')
 
     wallet_service = get_wallet_service()
-    portfolio = wallet_service.get_portfolio(address)
+    portfolio = wallet_service.get_portfolio(address, api_key=api_key if api_key else None)
 
     if not portfolio:
         return Response("error\nFailed to fetch portfolio\n", mimetype='text/csv')
@@ -203,16 +205,18 @@ def sheets_stakes():
 
     Query params:
         address: SS58 coldkey address (required)
+        api_key: Taostats API key (optional, overrides server default)
 
     Usage in Google Sheets:
-        =IMPORTDATA("http://your-server:5000/api/v1/sheets/stakes?address=5Cai...")
+        =IMPORTDATA("http://your-server:5000/api/v1/sheets/stakes?address=5Cai...&api_key=tao-xxx")
     """
     address = request.args.get('address', '').strip()
+    api_key = request.args.get('api_key', '').strip()
     if not address:
         return Response("error\nMissing 'address' query parameter\n", mimetype='text/csv')
 
     wallet_service = get_wallet_service()
-    portfolio = wallet_service.get_portfolio(address)
+    portfolio = wallet_service.get_portfolio(address, api_key=api_key if api_key else None)
 
     if not portfolio:
         return Response("error\nFailed to fetch portfolio\n", mimetype='text/csv')
@@ -309,10 +313,11 @@ def sheets_transfers():
 def sheets_delegations():
     """Google Sheets CSV for wallet delegation events (all transactions via pagination)."""
     address = request.args.get('address', '').strip()
+    api_key = request.args.get('api_key', '').strip()
     if not address:
         return Response("error\nMissing 'address' query parameter\n", mimetype='text/csv')
     wallet_service = get_wallet_service()
-    delegations = wallet_service.get_delegations(address)
+    delegations = wallet_service.get_delegations(address, api_key=api_key if api_key else None)
     if not delegations:
         return Response("block,timestamp,action,netuid,subnet_name,symbol,delegate_name,delegate,amount_tao,alpha,alpha_price_tao,extrinsic_id\n", mimetype='text/csv')
     return _to_csv_response(delegations)
@@ -322,8 +327,9 @@ def sheets_delegations():
 def sheets_whales():
     """Google Sheets CSV for top whale delegation transactions."""
     limit = request.args.get('limit', 10, type=int)
+    api_key = request.args.get('api_key', '').strip()
     wallet_service = get_wallet_service()
-    rows = wallet_service.get_whale_transactions(limit_per_whale=limit)
+    rows = wallet_service.get_whale_transactions(limit_per_whale=limit, api_key=api_key if api_key else None)
     if not rows:
         return Response("whale,timestamp,action,netuid,subnet_name,symbol,delegate_name,amount_tao,alpha,alpha_price_tao\n", mimetype='text/csv')
     return _to_csv_response(rows)

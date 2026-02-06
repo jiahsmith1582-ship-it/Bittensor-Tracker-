@@ -50,7 +50,7 @@ class WalletService:
         self._cache_timestamps: dict[str, datetime] = {}
         self._cache_ttl_seconds = cache_ttl
 
-    def get_portfolio(self, coldkey_ss58: str, use_cache: bool = True) -> Optional[WalletPortfolio]:
+    def get_portfolio(self, coldkey_ss58: str, use_cache: bool = True, api_key: str = None) -> Optional[WalletPortfolio]:
         if use_cache and coldkey_ss58 in self._cache:
             cache_ts = self._cache_timestamps.get(coldkey_ss58)
             if cache_ts:
@@ -59,7 +59,7 @@ class WalletService:
                     return self._cache[coldkey_ss58]
 
         try:
-            api_key = config.TAOSTATS_API_KEY
+            api_key = api_key or config.TAOSTATS_API_KEY
             if not api_key:
                 logger.error("TAOSTATS_API_KEY not configured")
                 return None
@@ -164,11 +164,11 @@ class WalletService:
             logger.error(f"Failed to get transfers: {e}")
             return []
 
-    def get_delegations(self, coldkey_ss58: str) -> list[dict]:
+    def get_delegations(self, coldkey_ss58: str, api_key: str = None) -> list[dict]:
         """Get all delegation (stake/unstake) events for a coldkey via pagination."""
         import time
         try:
-            api_key = config.TAOSTATS_API_KEY
+            api_key = api_key or config.TAOSTATS_API_KEY
             if not api_key:
                 logger.error("No TAOSTATS_API_KEY configured")
                 return []
@@ -257,7 +257,7 @@ class WalletService:
         return asdict(portfolio)
 
 
-    def get_whale_transactions(self, limit_per_whale: int = 10) -> list[dict]:
+    def get_whale_transactions(self, limit_per_whale: int = 10, api_key: str = None) -> list[dict]:
         """Get recent delegation transactions from top whale wallets."""
         import time
 
@@ -282,7 +282,7 @@ class WalletService:
                 return self._cache[cache_key]
 
         try:
-            api_key = config.TAOSTATS_API_KEY
+            api_key = api_key or config.TAOSTATS_API_KEY
             if not api_key:
                 return []
 
