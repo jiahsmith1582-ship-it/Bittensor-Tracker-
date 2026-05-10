@@ -50,6 +50,17 @@ class WalletService:
         self._cache_timestamps: dict[str, datetime] = {}
         self._cache_ttl_seconds = cache_ttl
 
+    def _keys_to_try(self, user_key: Optional[str]) -> list[tuple[str, str]]:
+        """Return [(label, key)] to attempt: user key first, env-var fallback."""
+        user_key = (user_key or "").strip() if user_key else ""
+        env_key = (config.TAOSTATS_API_KEY or "").strip()
+        keys: list[tuple[str, str]] = []
+        if user_key:
+            keys.append(("user", user_key))
+        if env_key and env_key != user_key:
+            keys.append(("env", env_key))
+        return keys
+
     def get_portfolio(self, coldkey_ss58: str, use_cache: bool = True, api_key: str = None) -> Optional[WalletPortfolio]:
         if use_cache and coldkey_ss58 in self._cache:
             cache_ts = self._cache_timestamps.get(coldkey_ss58)
@@ -58,26 +69,38 @@ class WalletService:
                 if age < self._cache_ttl_seconds:
                     return self._cache[coldkey_ss58]
 
+        keys = self._keys_to_try(api_key)
+        if not keys:
+            logger.error("No TAOSTATS_API_KEY available (neither caller nor env-var)")
+            return None
+
+        last_err = None
+        records = None
+        for label, key in keys:
+            try:
+                resp = requests.get(
+                    f"{TAOSTATS_BASE}/account/latest/v1",
+                    headers={"Authorization": key},
+                    params={"address": coldkey_ss58},
+                    timeout=15
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                records = data.get("data", [])
+                if records:
+                    break
+                logger.warning(f"No account data for {coldkey_ss58[:12]}... using {label} key")
+            except Exception as e:
+                last_err = e
+                logger.warning(f"Portfolio fetch failed with {label} key for {coldkey_ss58[:12]}...: {e}")
+                continue
+
+        if not records:
+            if last_err:
+                logger.error(f"All API keys failed for {coldkey_ss58[:12]}...: {last_err}")
+            return None
+
         try:
-            api_key = api_key or config.TAOSTATS_API_KEY
-            if not api_key:
-                logger.error("TAOSTATS_API_KEY not configured")
-                return None
-
-            resp = requests.get(
-                f"{TAOSTATS_BASE}/account/latest/v1",
-                headers={"Authorization": api_key},
-                params={"address": coldkey_ss58},
-                timeout=15
-            )
-            resp.raise_for_status()
-            data = resp.json()
-
-            records = data.get("data", [])
-            if not records:
-                logger.warning(f"No account data for {coldkey_ss58[:12]}...")
-                return None
-
             acct = records[0]
 
             free_balance = _rao_to_tao(acct.get("balance_free", 0))
@@ -167,12 +190,35 @@ class WalletService:
     def get_delegations(self, coldkey_ss58: str, api_key: str = None) -> list[dict]:
         """Get all delegation (stake/unstake) events for a coldkey via pagination."""
         import time
-        try:
-            api_key = api_key or config.TAOSTATS_API_KEY
-            if not api_key:
-                logger.error("No TAOSTATS_API_KEY configured")
-                return []
+        keys = self._keys_to_try(api_key)
+        if not keys:
+            logger.error("No TAOSTATS_API_KEY available (neither caller nor env-var)")
+            return []
 
+        # Probe each candidate key once; pagination uses the first one that works.
+        api_key = None
+        for label, k in keys:
+            try:
+                probe = requests.get(
+                    f"{TAOSTATS_BASE}/delegation/v1",
+                    headers={"Authorization": k},
+                    params={"nominator": coldkey_ss58, "limit": 1, "page": 1},
+                    timeout=15
+                )
+                if probe.status_code == 200:
+                    api_key = k
+                    logger.info(f"Delegations using {label} key for {coldkey_ss58[:12]}...")
+                    break
+                logger.warning(f"Delegations probe failed with {label} key (status {probe.status_code})")
+            except Exception as e:
+                logger.warning(f"Delegations probe failed with {label} key: {e}")
+                continue
+
+        if not api_key:
+            logger.error(f"All API keys failed for delegations of {coldkey_ss58[:12]}...")
+            return []
+
+        try:
             bt_service = get_bittensor_service()
             rows = []
             page = 1
