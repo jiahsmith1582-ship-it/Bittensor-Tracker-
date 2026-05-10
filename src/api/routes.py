@@ -171,13 +171,13 @@ def sheets_portfolio():
     address = request.args.get('address', '').strip()
     api_key = request.args.get('api_key', '').strip()
     if not address:
-        return Response("error\nMissing 'address' query parameter\n", mimetype='text/csv')
+        return Response("error\nMissing 'address' query parameter\n", mimetype='text/csv', status=400)
 
     wallet_service = get_wallet_service()
     portfolio = wallet_service.get_portfolio(address, api_key=api_key if api_key else None)
 
     if not portfolio:
-        return Response("error\nFailed to fetch portfolio\n", mimetype='text/csv')
+        return Response("error\nFailed to fetch portfolio\n", mimetype='text/csv', status=502)
 
     output = io.StringIO()
     writer = csv.writer(output)
@@ -213,13 +213,13 @@ def sheets_stakes():
     address = request.args.get('address', '').strip()
     api_key = request.args.get('api_key', '').strip()
     if not address:
-        return Response("error\nMissing 'address' query parameter\n", mimetype='text/csv')
+        return Response("error\nMissing 'address' query parameter\n", mimetype='text/csv', status=400)
 
     wallet_service = get_wallet_service()
     portfolio = wallet_service.get_portfolio(address, api_key=api_key if api_key else None)
 
     if not portfolio:
-        return Response("error\nFailed to fetch portfolio\n", mimetype='text/csv')
+        return Response("error\nFailed to fetch portfolio\n", mimetype='text/csv', status=502)
 
     if not portfolio.subnet_stakes:
         return Response(
